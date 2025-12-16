@@ -1,0 +1,59 @@
+# Titans Strategy Configuration
+
+strategies:
+  # Momentum Strategy
+  - name: momentum_btc
+    type: momentum
+    enabled: true
+    symbols:
+      - BTCUSDT
+    params:
+      lookback: 20
+      threshold: 0.02
+    risk:
+      max_position_pct: 0.1
+      stop_loss_pct: 1.0
+      take_profit_pct: 2.0
+    timing:
+      min_order_interval_ms: 1000
+      signal_decay_seconds: 5
+
+  # Mean Reversion Strategy
+  - name: mean_reversion_eth
+    type: mean_reversion
+    enabled: true
+    symbols:
+      - ETHUSDT
+    params:
+      window: 50
+      z_threshold: 2.0
+    risk:
+      max_position_pct: 0.1
+      stop_loss_pct: 1.5
+      take_profit_pct: 1.0
+    timing:
+      min_order_interval_ms: 2000
+      signal_decay_seconds: 10
+
+  # Book Imbalance Strategy
+  - name: book_imbalance
+    type: imbalance
+    enabled: false
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+    params:
+      imbalance_threshold: 0.3
+      confirmation_ticks: 5
+      levels: 5
+    risk:
+      max_position_pct: 0.05
+      stop_loss_pct: 0.5
+      take_profit_pct: 0.3
+
+# Global strategy settings
+global:
+  initial_capital: 100000.0
+  currency: USD
+  rebalance_interval_minutes: 60
+  correlation_limit: 0.7

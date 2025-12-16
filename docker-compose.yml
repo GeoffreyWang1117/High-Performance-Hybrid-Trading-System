@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Main trading engine
+  titans-engine:
+    build:
+      context: .
+      target: runtime
+    container_name: titans-engine
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TITANS_DATA_PATH=/data
+      - OLLAMA_URL=http://ollama:11434
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    networks:
+      - titans-network
+    depends_on:
+      - ollama
+    command: ["titans_engine", "--mode", "shadow", "--symbols", "BTCUSDT,ETHUSDT"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Streamlit dashboard
+  titans-dashboard:
+    build:
+      context: .
+      target: runtime
+    container_name: titans-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/data
+      - ./python:/opt/titans/python
+    networks:
+      - titans-network
+    environment:
+      - TITANS_DATA_PATH=/data
+    command: ["streamlit", "run", "/opt/titans/python/visualizer/app.py", "--server.address", "0.0.0.0"]
+
+  # Local LLM (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: titans-ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - titans-network
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Development environment
+  titans-dev:
+    build:
+      context: .
+      target: dev
+    container_name: titans-dev
+    runtime: nvidia
+    volumes:
+      - .:/workspace
+      - ./data:/data
+    networks:
+      - titans-network
+    stdin_open: true
+    tty: true
+    profiles:
+      - dev
+
+networks:
+  titans-network:
+    driver: bridge
+
+volumes:
+  ollama-data:

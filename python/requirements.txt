@@ -1,0 +1,18 @@
+# Titans Python Dependencies
+
+# Visualization
+streamlit>=1.28.0
+plotly>=5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# LLM Integration
+requests>=2.31.0
+
+# Data processing
+pyarrow>=14.0.0
+
+# Development
+pytest>=7.4.0
+black>=23.0.0
+mypy>=1.0.0
