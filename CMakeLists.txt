@@ -142,6 +142,12 @@ if(TITANS_ENABLE_BENCHMARKS)
     target_link_libraries(titans_benchmark PRIVATE titans_core titans_trading)
 endif()
 
+# Research experiment executable
+add_executable(titans_experiment
+    examples/run_contamination_experiment.cpp
+)
+target_link_libraries(titans_experiment PRIVATE titans_core)
+
 # Tests
 if(TITANS_ENABLE_TESTS)
     enable_testing()
