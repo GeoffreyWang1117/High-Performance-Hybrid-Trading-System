@@ -128,6 +128,43 @@ docker-compose up -d
 open http://localhost:8501
 ```
 
+## Research Framework
+
+Titans includes a comprehensive research framework for studying **LLM Context Contamination** in event-driven systems:
+
+### Key Research Components
+
+| Component | Description |
+|-----------|-------------|
+| **Versioned Context** | Entity state with temporal validity and provenance tracking |
+| **Contamination Injector** | Systematic injection of 6 contamination types |
+| **Evaluation Metrics** | Impact, persistence, and mitigation effectiveness |
+| **Experiment Harness** | Automated baseline comparisons and ablation studies |
+| **LLM Integration** | Ollama/vLLM backends for real model experiments |
+| **Distributed Experiments** | Multi-worker parallel execution with GPU monitoring |
+
+### Running Research Experiments
+
+```bash
+# Simulated experiments (no LLM required)
+./titans_experiment
+
+# Real LLM experiments (requires Ollama)
+ollama serve &
+ollama pull llama3.1:8b
+./titans_llm_experiment
+
+# Distributed grid search
+./titans_distributed_experiment --full
+
+# Generate paper figures
+cd python/research
+pip install -r requirements.txt
+python generate_figures.py
+```
+
+See [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) for detailed documentation.
+
 ## Project Structure
 
 ```
@@ -138,29 +175,45 @@ titans/
 │   │   ├── spsc_queue.hpp  # Lock-free queues
 │   │   ├── memory_pool.hpp # Memory management
 │   │   ├── event_bus.hpp   # Event system
-│   │   └── event_loop.hpp  # Main event loop
+│   │   ├── http_client.hpp # HTTP client
+│   │   ├── json.hpp        # JSON parser
+│   │   ├── gpu_monitor.hpp # GPU metrics
+│   │   └── debug.hpp       # Debugging utilities
 │   ├── trading/            # Trading components
 │   │   ├── order_book.hpp  # Order book
 │   │   ├── matching_engine.hpp
 │   │   ├── risk_manager.hpp
 │   │   └── shadow_engine.hpp
+│   ├── context/            # Research framework
+│   │   ├── versioned_entity.hpp      # Versioned state
+│   │   ├── contamination_injector.hpp # Contamination injection
+│   │   ├── evaluation_metrics.hpp    # Metrics
+│   │   ├── experiment_harness.hpp    # Experiment runner
+│   │   ├── llm_interface.hpp         # LLM abstraction
+│   │   ├── ollama_backend.hpp        # Ollama/vLLM impl
+│   │   ├── distributed_experiment.hpp # Distributed runner
+│   │   ├── experiment_persistence.hpp # Result storage
+│   │   └── data_adapters.hpp         # Data sources
 │   ├── market_data/        # Market data handling
-│   │   ├── websocket_client.hpp
-│   │   └── binary_logger.hpp
 │   ├── strategy/           # Strategy framework
-│   │   └── strategy_base.hpp
 │   └── cuda/               # GPU kernels
-│       ├── cuda_utils.cuh
-│       ├── rolling_statistics.cuh
-│       └── alpha_kernels.cuh
 ├── src/                    # Implementation files
 ├── tests/                  # Unit tests
-├── python/                 # Python analytics
+├── examples/               # Example programs
+│   ├── run_contamination_experiment.cpp
+│   ├── run_llm_experiment.cpp
+│   └── run_distributed_experiment.cpp
+├── python/                 # Python tools
 │   ├── analytics/          # LLM integration
-│   └── visualizer/         # Streamlit dashboard
+│   ├── visualizer/         # Streamlit dashboard
+│   └── research/           # Paper figures
+├── docs/                   # Documentation
+│   ├── RESEARCH_FRAMEWORK.md
+│   ├── API_REFERENCE.md
+│   ├── DEBUGGING_GUIDE.md
+│   └── TROUBLESHOOTING.md
 ├── config/                 # Configuration files
-├── data/                   # Data directory
-└── docs/                   # Documentation
+└── data/                   # Data directory
 ```
 
 ## Performance
