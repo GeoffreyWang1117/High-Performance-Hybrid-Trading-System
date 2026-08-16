@@ -228,14 +228,9 @@ public:
      * @brief Calculate volume-weighted average price
      */
     std::optional<double> vwap(Side side, Quantity target_qty) const {
-        const auto& levels = (side == Side::Buy) ? asks_ : bids_;
-
         Quantity remaining = target_qty;
         double total_value = 0;
         Quantity total_qty = 0;
-
-        auto it = (side == Side::Buy) ? levels.begin() : levels.end();
-        auto end = (side == Side::Buy) ? levels.end() : levels.begin();
 
         if (side == Side::Sell) {
             // For sells, iterate bids in reverse

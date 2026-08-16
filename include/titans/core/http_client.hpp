@@ -221,6 +221,37 @@ public:
         return result;
     }
 
+    /**
+     * @brief Read up to max_len bytes (single recv, for streaming consumers).
+     * @return bytes read, 0 on orderly shutdown, -1 on timeout/error.
+     */
+    ssize_t receive_some(char* buffer, size_t max_len, int timeout_ms = 30000) {
+        if (fd_ < 0) {
+            last_error_ = "Socket not connected";
+            return -1;
+        }
+
+        struct pollfd pfd;
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+
+        int poll_result = poll(&pfd, 1, timeout_ms);
+        if (poll_result < 0) {
+            last_error_ = "Poll failed: " + std::string(strerror(errno));
+            return -1;
+        }
+        if (poll_result == 0) {
+            last_error_ = "Receive timeout";
+            return -1;
+        }
+
+        ssize_t received = ::recv(fd_, buffer, max_len, 0);
+        if (received < 0) {
+            last_error_ = "Receive failed: " + std::string(strerror(errno));
+        }
+        return received;
+    }
+
     void close() {
         if (fd_ >= 0) {
             ::close(fd_);

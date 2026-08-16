@@ -22,6 +22,8 @@
 #include <condition_variable>
 #include <atomic>
 #include <set>
+#include <map>
+#include <tuple>
 
 namespace titans {
 namespace context {
@@ -277,13 +279,15 @@ private:
 class ExperimentCoordinator {
 public:
     struct Config {
-        int port = 9000;
-        int task_timeout_s = 3600;  // 1 hour
-        int max_retries = 3;
+        int port;
+        int task_timeout_s;
+        int max_retries;
+
+        Config() : port(9000), task_timeout_s(3600), max_retries(3) {}
     };
 
-    explicit ExperimentCoordinator(const Config& config = {})
-        : config_(config), running_(false) {}
+    explicit ExperimentCoordinator(Config config = Config())
+        : config_(std::move(config)), running_(false) {}
 
     // Submit a batch of experiments
     std::string submit_experiment_batch(

@@ -46,7 +46,8 @@ int main() {
         ContextMethod::FullHistory,
         ContextMethod::FixedWindow,
         ContextMethod::TimeFilter,
-        ContextMethod::VersionedContext
+        ContextMethod::VersionedContext,
+        ContextMethod::FullVersionedIntegrity
     };
 
     auto comparison_results = runner.run_comparison(base_config, methods);

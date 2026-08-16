@@ -270,6 +270,7 @@ public:
                 .type = ContaminationType::SourceAmbiguity,
                 .affected_entity = entity.id(),
                 .contaminating_version = state.version,
+                .current_correct_version = entity.current_version(),
                 .detected_at = current_time,
                 .description = "State has unknown provenance",
                 .severity = 0.5
@@ -283,6 +284,7 @@ public:
                 .type = ContaminationType::InferencePersistence,
                 .affected_entity = entity.id(),
                 .contaminating_version = state.version,
+                .current_correct_version = entity.current_version(),
                 .detected_at = current_time,
                 .description = "Low-confidence model inference in context",
                 .severity = 0.6

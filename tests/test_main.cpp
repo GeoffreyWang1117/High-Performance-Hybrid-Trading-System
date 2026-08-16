@@ -34,6 +34,9 @@ extern bool run_spsc_queue_tests();
 extern bool run_memory_pool_tests();
 extern bool run_event_bus_tests();
 extern bool run_order_book_tests();
+extern bool run_versioned_entity_tests();
+extern bool run_contamination_tests();
+extern bool run_json_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -53,7 +56,10 @@ int main(int argc, char* argv[]) {
         {"SPSC Queue", run_spsc_queue_tests},
         {"Memory Pool", run_memory_pool_tests},
         {"Event Bus", run_event_bus_tests},
-        {"Order Book", run_order_book_tests}
+        {"Order Book", run_order_book_tests},
+        {"Versioned Entity", run_versioned_entity_tests},
+        {"Contamination", run_contamination_tests},
+        {"JSON", run_json_tests}
     };
 
     for (const auto& [name, test_func] : modules) {

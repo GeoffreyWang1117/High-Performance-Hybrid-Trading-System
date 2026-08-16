@@ -202,7 +202,11 @@ class EventBus {
 public:
     static constexpr size_t EVENT_QUEUE_SIZE = 65536;  // Must be power of 2
 
-    EventBus() : seq_num_(0), running_(false) {}
+    // The 64K-slot queue is ~8MB; keep it on the heap so an EventBus can
+    // safely live on the stack.
+    EventBus()
+        : event_queue_(std::make_unique<MPSCQueue<Event, EVENT_QUEUE_SIZE>>()),
+          seq_num_(0), running_(false) {}
 
     ~EventBus() = default;
 
@@ -258,7 +262,7 @@ public:
      * @brief Queue an event for later dispatch
      */
     bool queue(const Event& event) {
-        return event_queue_.try_push(event);
+        return event_queue_->try_push(event);
     }
 
     /**
@@ -269,7 +273,7 @@ public:
         size_t count = 0;
         Event event;
 
-        while (event_queue_.try_pop(event)) {
+        while (event_queue_->try_pop(event)) {
             publish(event);
             ++count;
         }
@@ -284,7 +288,7 @@ public:
         size_t count = 0;
         Event event;
 
-        while (count < max_events && event_queue_.try_pop(event)) {
+        while (count < max_events && event_queue_->try_pop(event)) {
             publish(event);
             ++count;
         }
@@ -304,7 +308,7 @@ public:
      * @brief Get number of queued events
      */
     size_t queued_count() const {
-        return event_queue_.size();
+        return event_queue_->size();
     }
 
     /**
@@ -323,7 +327,7 @@ public:
 
 private:
     std::unordered_map<EventType, std::vector<std::unique_ptr<IEventHandler>>> handlers_;
-    MPSCQueue<Event, EVENT_QUEUE_SIZE> event_queue_;
+    std::unique_ptr<MPSCQueue<Event, EVENT_QUEUE_SIZE>> event_queue_;
     std::atomic<SequenceNum> seq_num_;
     std::atomic<bool> running_;
 };

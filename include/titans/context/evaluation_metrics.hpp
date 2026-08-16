@@ -343,9 +343,13 @@ struct ExperimentResult {
     Timestamp end_time;
 
     // Configuration
-    size_t num_events;
-    size_t num_entities;
-    double contamination_rate;
+    size_t num_events = 0;
+    size_t num_entities = 0;
+    double contamination_rate = 0;
+
+    // How many contamination instances the reliability layer caught
+    // (always 0 for baseline methods, which never inspect provenance).
+    size_t detected_contaminations = 0;
 
     // Results
     ContaminationImpactMetrics impact_metrics;
@@ -400,7 +404,7 @@ enum class ContextMethod {
     FullVersionedIntegrity  // Our full method with all features
 };
 
-std::string method_name(ContextMethod m) {
+inline std::string method_name(ContextMethod m) {
     switch (m) {
         case ContextMethod::NoHistory: return "NoHistory";
         case ContextMethod::FullHistory: return "FullHistory";

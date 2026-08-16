@@ -393,12 +393,10 @@ public:
         bool headers_done = false;
 
         while (true) {
-            // Simple blocking read (production would use async I/O)
-            ssize_t received = recv(conn.is_open() ? 3 : -1, recv_buf, sizeof(recv_buf) - 1, 0);
+            ssize_t received = conn.receive_some(recv_buf, sizeof(recv_buf), config_.timeout_ms);
             if (received <= 0) break;
 
-            recv_buf[received] = '\0';
-            buffer += recv_buf;
+            buffer.append(recv_buf, static_cast<size_t>(received));
 
             // Skip HTTP headers
             if (!headers_done) {

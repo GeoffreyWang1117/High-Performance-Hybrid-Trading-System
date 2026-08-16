@@ -17,6 +17,8 @@
 #include <iomanip>
 #include <stdexcept>
 #include <cmath>
+#include <cstring>
+#include <cctype>
 
 namespace titans {
 namespace json {

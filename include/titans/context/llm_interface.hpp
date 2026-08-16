@@ -13,6 +13,7 @@
 
 #include "versioned_entity.hpp"
 #include "evaluation_metrics.hpp"
+#include "experiment_harness.hpp"
 #include <string>
 #include <vector>
 #include <functional>
@@ -89,7 +90,7 @@ public:
     // Batch inference for efficiency
     virtual std::vector<LLMResponse> complete_batch(
         const std::vector<LLMRequest>& requests,
-        int max_concurrent = 4
+        [[maybe_unused]] int max_concurrent = 4
     ) {
         std::vector<LLMResponse> responses;
         for (const auto& req : requests) {

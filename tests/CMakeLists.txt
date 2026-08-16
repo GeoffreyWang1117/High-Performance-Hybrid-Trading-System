@@ -13,6 +13,9 @@ if(GTest_FOUND)
         test_memory_pool.cpp
         test_event_bus.cpp
         test_order_book.cpp
+        test_versioned_entity.cpp
+        test_contamination.cpp
+        test_json.cpp
     )
 
     target_link_libraries(titans_tests
@@ -35,6 +38,9 @@ else()
         test_memory_pool.cpp
         test_event_bus.cpp
         test_order_book.cpp
+        test_versioned_entity.cpp
+        test_contamination.cpp
+        test_json.cpp
     )
 
     target_link_libraries(titans_tests

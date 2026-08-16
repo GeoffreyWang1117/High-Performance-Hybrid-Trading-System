@@ -24,7 +24,14 @@
 #include <functional>
 #include <iomanip>
 #include <cstring>
+#include <cstdlib>
 #include <atomic>
+#include <algorithm>
+#include <limits>
+
+#ifdef __GNUC__
+#include <execinfo.h>
+#endif
 
 namespace titans {
 namespace debug {
@@ -386,7 +393,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         allocations_[category] += bytes;
         total_allocated_ += bytes;
-        peak_allocated_ = std::max(peak_allocated_, total_allocated_.load());
+        peak_allocated_ = std::max(peak_allocated_.load(), total_allocated_.load());
     }
 
     void track_deallocation(const std::string& category, size_t bytes) {

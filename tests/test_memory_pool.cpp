@@ -38,11 +38,12 @@ bool test_object_pool_basic() {
 }
 
 bool test_object_pool_reuse() {
-    ObjectPool<int, 4> pool;
+    // Element type must be at least pointer-sized (free-list constraint)
+    ObjectPool<int64_t, 4> pool;
 
     // Allocate
-    int* a = pool.allocate();
-    int* b = pool.allocate();
+    int64_t* a = pool.allocate();
+    int64_t* b = pool.allocate();
     *a = 42;
     *b = 100;
 
@@ -51,8 +52,8 @@ bool test_object_pool_reuse() {
     pool.deallocate(b);
 
     // Reallocate - should reuse
-    int* c = pool.allocate();
-    int* d = pool.allocate();
+    int64_t* c = pool.allocate();
+    int64_t* d = pool.allocate();
 
     if (c != b && c != a) {
         std::cerr << "Expected memory reuse" << std::endl;
