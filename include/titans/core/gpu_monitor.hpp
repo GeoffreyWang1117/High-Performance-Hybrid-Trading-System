@@ -185,7 +185,8 @@ private:
         std::array<char, 4096> buffer;
         std::string result;
 
-        FILE* pipe = popen(cmd.c_str(), "r");
+        // Silence "command not found" noise on GPU-less machines
+        FILE* pipe = popen((cmd + " 2>/dev/null").c_str(), "r");
         if (!pipe) return "";
 
         while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {

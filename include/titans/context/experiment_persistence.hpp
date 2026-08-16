@@ -15,6 +15,8 @@
 #include <iomanip>
 #include <ctime>
 #include <filesystem>
+#include <map>
+#include <tuple>
 
 namespace titans {
 namespace context {
@@ -260,51 +262,72 @@ public:
         return ci;
     }
 
+    /**
+     * @brief Seed-paired significance test of every method against a baseline.
+     *
+     * Runs are paired by (contamination_rate, num_events, seed): the same
+     * synthetic stream evaluated under two methods. Requires >= 2 paired
+     * seeds per method; methods with fewer pairs are reported as n/a.
+     */
     static void print_significance_table(
         const std::vector<ExperimentResult>& results,
         const std::string& baseline_method = "NoHistory"
     ) {
-        // Find baseline
-        const ExperimentResult* baseline = nullptr;
+        // Index baseline runs by their experimental condition + seed
+        using Key = std::tuple<double, size_t, uint64_t>;
+        std::map<Key, double> baseline_acc;
         for (const auto& r : results) {
             if (r.method_name == baseline_method) {
-                baseline = &r;
-                break;
+                baseline_acc[{r.contamination_rate, r.num_events, r.seed}] =
+                    r.impact_metrics.accuracy;
             }
         }
 
-        if (!baseline) {
+        if (baseline_acc.empty()) {
             printf("Baseline method '%s' not found\n", baseline_method.c_str());
             return;
         }
 
-        printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf("║  STATISTICAL SIGNIFICANCE vs %s                          ║\n", baseline_method.c_str());
-        printf("╠═══════════════════════════════════════════════════════════════╣\n");
-        printf("║ Method            │ Accuracy │ Δ vs Base │ t-stat │ p-value  ║\n");
-        printf("╠═══════════════════╪══════════╪═══════════╪════════╪══════════╣\n");
-
+        // Collect paired samples per treatment method
+        std::map<std::string, std::pair<std::vector<double>, std::vector<double>>> paired;
         for (const auto& r : results) {
             if (r.method_name == baseline_method) continue;
+            auto it = baseline_acc.find({r.contamination_rate, r.num_events, r.seed});
+            if (it == baseline_acc.end()) continue;
+            paired[r.method_name].first.push_back(it->second);
+            paired[r.method_name].second.push_back(r.impact_metrics.accuracy);
+        }
 
-            double delta = r.impact_metrics.accuracy - baseline->impact_metrics.accuracy;
-            // Simplified: in real experiments we'd have multiple runs
-            double t_stat = delta * 10;  // Placeholder
-            double p_val = 2.0 * (1.0 - normal_cdf(std::abs(t_stat)));
+        printf("\n╔═══════════════════════════════════════════════════════════════════╗\n");
+        printf("║  PAIRED SIGNIFICANCE vs %-25s                 ║\n", baseline_method.c_str());
+        printf("╠═══════════════════════════════════════════════════════════════════╣\n");
+        printf("║ Method            │ Pairs │ Mean Δ    │ t-stat │ p-value          ║\n");
+        printf("╠═══════════════════╪═══════╪═══════════╪════════╪══════════════════╣\n");
 
-            const char* sig = p_val < 0.01 ? "**" : (p_val < 0.05 ? "*" : "");
+        for (const auto& [method, samples] : paired) {
+            const auto& [base, treat] = samples;
 
-            printf("║ %-17s │ %7.2f%% │ %+8.2f%% │ %6.2f │ %7.4f%s ║\n",
-                   r.method_name.c_str(),
-                   r.impact_metrics.accuracy * 100,
-                   delta * 100,
-                   t_stat,
-                   p_val,
+            if (base.size() < 2) {
+                printf("║ %-17s │ %5zu │    n/a (need >=2 paired seeds)          ║\n",
+                       method.c_str(), base.size());
+                continue;
+            }
+
+            auto test = paired_t_test(base, treat);
+            const char* sig = test.significant_at_01 ? "**"
+                             : (test.significant_at_05 ? "*" : "");
+
+            printf("║ %-17s │ %5zu │ %+8.2f%% │ %6.2f │ %7.4f%-2s        ║\n",
+                   method.c_str(),
+                   base.size(),
+                   test.mean_diff * 100,
+                   test.t_statistic,
+                   test.p_value,
                    sig);
         }
 
-        printf("╚═══════════════════════════════════════════════════════════════╝\n");
-        printf("  * p < 0.05, ** p < 0.01\n");
+        printf("╚═══════════════════════════════════════════════════════════════════╝\n");
+        printf("  * p < 0.05, ** p < 0.01 (paired t-test over matched seeds)\n");
     }
 
 private:

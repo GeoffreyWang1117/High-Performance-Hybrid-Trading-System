@@ -148,6 +148,25 @@ cd python/research
 python generate_figures.py
 ```
 
+## Known Limitations of the Simulator
+
+Honest caveats to carry into the paper:
+
+1. **NoHistory is a strong baseline by construction.** The `ModelSimulator`
+   gives context no upward benefit — it only carries contamination risk — so a
+   method that discards everything scores well on clean accuracy. With real
+   LLMs, context improves clean-task accuracy, which is exactly what the
+   real-model experiments (`titans_llm_experiment`) must measure. Simulated
+   results are therefore valid for *ranking contamination resistance*, not for
+   absolute accuracy claims.
+2. **Summary/Retrieval contamination is undetectable by the entity store.**
+   `VersionedContext` cannot inspect inside a summary blob or a retrieved
+   passage; only provenance-tagged state is checkable. This is an intentional
+   scope boundary, not an oversight.
+3. **Residual degradation constants** (0.995 per stale context item, floor at
+   300 items) are simulator parameters. Sensitivity to them should be reported
+   in an appendix; the method *ranking* is what the simulation establishes.
+
 ## Experiment Checklist
 
 ### Phase 1: Simulated Experiments

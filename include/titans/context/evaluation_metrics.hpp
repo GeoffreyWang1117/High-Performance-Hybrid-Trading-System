@@ -351,6 +351,9 @@ struct ExperimentResult {
     // (always 0 for baseline methods, which never inspect provenance).
     size_t detected_contaminations = 0;
 
+    // Seed used for this run; lets analysis pair runs across methods.
+    uint64_t seed = 0;
+
     // Results
     ContaminationImpactMetrics impact_metrics;
     ContaminationPersistenceMetrics persistence_metrics;

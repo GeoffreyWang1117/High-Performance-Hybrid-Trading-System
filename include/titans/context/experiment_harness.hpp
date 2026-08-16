@@ -15,6 +15,8 @@
 #include <memory>
 #include <chrono>
 #include <unordered_set>
+#include <algorithm>
+#include <cmath>
 
 namespace titans {
 namespace context {
@@ -242,6 +244,97 @@ public:
 
 private:
     size_t window_size_;
+};
+
+/**
+ * @brief Rolling summary baseline: recent events verbatim, older history
+ * "compressed" into a sampled digest.
+ *
+ * Mirrors how summarization behaves in real agents: the digest is written
+ * once and never revalidated, so contaminated events baked into it persist
+ * indefinitely (summary contamination).
+ */
+class RollingSummaryContext : public BaselineContextManager {
+public:
+    explicit RollingSummaryContext(size_t recent_window = 100,
+                                   size_t summary_stride = 10)
+        : recent_window_(recent_window), summary_stride_(summary_stride) {}
+
+    std::vector<SyntheticEvent> get_context(
+        const SyntheticEvent& current_event,
+        const std::vector<SyntheticEvent>& history
+    ) override {
+        std::vector<SyntheticEvent> result;
+
+        size_t recent_start = history.size() > recent_window_ ?
+            history.size() - recent_window_ : 0;
+
+        // Digest of old history: every Nth event survives compression,
+        // regardless of whether it was contaminated.
+        for (size_t i = 0; i < recent_start; i += summary_stride_) {
+            result.push_back(history[i]);
+        }
+
+        // Recent events verbatim
+        for (size_t i = recent_start; i < history.size(); ++i) {
+            result.push_back(history[i]);
+        }
+
+        result.push_back(current_event);
+        return result;
+    }
+    std::string name() const override { return "RollingSummary"; }
+
+private:
+    size_t recent_window_;
+    size_t summary_stride_;
+};
+
+/**
+ * @brief Vector retrieval baseline: top-k most similar events by value,
+ * with no recency discount.
+ *
+ * Mirrors semantic RAG failure: an old, stale event that "looks similar"
+ * outranks a fresh but less similar one (retrieval contamination).
+ */
+class VectorRetrievalContext : public BaselineContextManager {
+public:
+    explicit VectorRetrievalContext(size_t k = 20, size_t search_window = 2000)
+        : k_(k), search_window_(search_window) {}
+
+    std::vector<SyntheticEvent> get_context(
+        const SyntheticEvent& current_event,
+        const std::vector<SyntheticEvent>& history
+    ) override {
+        size_t start = history.size() > search_window_ ?
+            history.size() - search_window_ : 0;
+
+        // Similarity = value proximity, boosted for same entity.
+        // Deliberately no time component: that is the contamination vector.
+        std::vector<std::pair<double, size_t>> scored;
+        scored.reserve(history.size() - start);
+        for (size_t i = start; i < history.size(); ++i) {
+            double dist = std::abs(history[i].value - current_event.value);
+            if (history[i].entity_id == current_event.entity_id) dist *= 0.5;
+            scored.emplace_back(dist, i);
+        }
+
+        size_t take = std::min(k_, scored.size());
+        std::partial_sort(scored.begin(), scored.begin() + take, scored.end());
+
+        std::vector<SyntheticEvent> result;
+        result.reserve(take + 1);
+        for (size_t i = 0; i < take; ++i) {
+            result.push_back(history[scored[i].second]);
+        }
+        result.push_back(current_event);
+        return result;
+    }
+    std::string name() const override { return "VectorRetrieval"; }
+
+private:
+    size_t k_;
+    size_t search_window_;
 };
 
 class TimeFilterContext : public BaselineContextManager {
@@ -519,6 +612,7 @@ public:
         result.num_entities = config.num_entities;
         result.contamination_rate = config.contamination_rate;
         result.detected_contaminations = contamination_events.size();
+        result.seed = config.seed;
         result.impact_metrics = impact_metrics;
         result.persistence_metrics = persistence_metrics;
         result.avg_latency_ms = static_cast<double>(duration_ms) / config.num_events;
@@ -590,6 +684,10 @@ private:
                 return std::make_unique<FullHistoryContext>();
             case ContextMethod::FixedWindow:
                 return std::make_unique<FixedWindowContext>(100);
+            case ContextMethod::RollingSummary:
+                return std::make_unique<RollingSummaryContext>();
+            case ContextMethod::VectorRetrieval:
+                return std::make_unique<VectorRetrievalContext>();
             case ContextMethod::TimeFilter:
                 // 500ms window: must be shorter than the experiment span or
                 // the filter degenerates into FullHistory.

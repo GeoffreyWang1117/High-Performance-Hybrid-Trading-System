@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DTITANS_ENABLE_CUDA=OFF \
+            -DTITANS_ENABLE_TESTS=ON \
+            -DTITANS_ENABLE_BENCHMARKS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run unit tests
+        run: cd build && ctest --output-on-failure
+
+      - name: Run simulated experiment (smoke)
+        # The full experiment suite runs in seconds; this catches runtime
+        # regressions in the research pipeline, not just compile breaks.
+        run: ./build/titans_experiment > /dev/null
+
+  header-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y g++
+
+      - name: Every public header compiles standalone
+        run: |
+          set -e
+          failures=0
+          for h in $(find include/titans -name '*.hpp'); do
+            echo "#include \"${h#include/}\"" > /tmp/hdr_test.cpp
+            echo "int main(){return 0;}" >> /tmp/hdr_test.cpp
+            if ! g++ -std=c++20 -fsyntax-only -Iinclude /tmp/hdr_test.cpp 2>/tmp/err.txt; then
+              echo "::error file=$h::header does not compile standalone"
+              head -5 /tmp/err.txt
+              failures=$((failures+1))
+            fi
+          done
+          exit $failures
+
+      - name: No ODR violations across translation units
+        run: |
+          cat > /tmp/tu1.cpp <<'EOF'
+          #include "titans/context/distributed_experiment.hpp"
+          #include "titans/context/ollama_backend.hpp"
+          #include "titans/core/debug.hpp"
+          int helper() { return 1; }
+          EOF
+          cat > /tmp/tu2.cpp <<'EOF'
+          #include "titans/context/distributed_experiment.hpp"
+          #include "titans/context/ollama_backend.hpp"
+          #include "titans/core/debug.hpp"
+          int helper();
+          int main() { return helper() - 1; }
+          EOF
+          g++ -std=c++20 -Iinclude /tmp/tu1.cpp /tmp/tu2.cpp -o /tmp/odr_test -pthread

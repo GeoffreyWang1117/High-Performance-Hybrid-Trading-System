@@ -158,6 +158,11 @@ add_executable(titans_distributed_experiment
 )
 target_link_libraries(titans_distributed_experiment PRIVATE titans_core Threads::Threads)
 
+add_executable(titans_config_experiment
+    examples/run_config_experiment.cpp
+)
+target_link_libraries(titans_config_experiment PRIVATE titans_core Threads::Threads)
+
 # Tests
 if(TITANS_ENABLE_TESTS)
     enable_testing()
