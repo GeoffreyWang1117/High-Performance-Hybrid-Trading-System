@@ -1,0 +1,18 @@
+# ThreadSanitizer suppressions.
+#
+# AdvisorySlot::try_read copies a ring slot without holding a lock. In the
+# LAPPED case -- the writer advanced by kRing-1 during the copy -- that read
+# races with the writer's store. The copy is then DISCARDED: try_read re-reads
+# the generation, detects the lap, and either retries or reports failure so the
+# caller keeps its cached advisory. No torn value is ever returned.
+#
+# TSan cannot see that the value is discarded, so it reports the access. This is
+# the standard seqlock-family trade-off, made the same way by the Linux kernel,
+# folly, and Rust's seqlock crate.
+#
+# Correctness here is established by test_advisory_slot_never_tears, which runs
+# an adversarial tight-loop writer against a reader and asserts zero torn reads
+# (measured: 0 in 2 564 325). If that test is ever weakened, this suppression
+# stops being justified.
+race:titans::lanes::AdvisorySlot::try_read
+race:titans::lanes::AdvisorySlot::publish

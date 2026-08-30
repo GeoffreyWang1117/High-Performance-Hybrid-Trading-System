@@ -36,10 +36,145 @@ jobs:
       - name: Run unit tests
         run: cd build && ctest --output-on-failure
 
-      - name: Run simulated experiment (smoke)
-        # The full experiment suite runs in seconds; this catches runtime
-        # regressions in the research pipeline, not just compile breaks.
+      - name: Run experiment suite (smoke)
+        # Runs in seconds; catches runtime regressions in the research
+        # pipeline, not just compile breaks.
         run: ./build/titans_experiment > /dev/null
+
+      - name: titans_llm_experiment refuses to run without a backend
+        # The single most important behaviour of this binary is that it does
+        # NOT fall back to a stand-in when no model is reachable. A silent
+        # fallback would emit clean-looking numbers from a model that was never
+        # queried, which is exactly the defect this repository was rebuilt to
+        # remove. Assert the refusal.
+        run: |
+          set +e
+          out=$(./build/titans_llm_experiment --backend vllm --port 59999 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::llm experiment exited 0 with no backend reachable"
+            exit 1
+          fi
+          echo "$out" | grep -q "will not fall back to a stand-in" || {
+            echo "::error::refusal message changed; check the fallback path"
+            exit 1
+          }
+
+      - name: Figure generation refuses to fabricate data
+        # generate_figures.py used to synthesize np.random results when no
+        # experiment output existed, producing publication-ready figures from
+        # nothing. Assert that it now fails instead.
+        run: |
+          python3 -m pip install --quiet pandas numpy matplotlib seaborn
+          set +e
+          python3 python/research/generate_figures.py --results /nonexistent 2>&1 | tee /tmp/fig.log
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::figure generation succeeded with no results present"
+            exit 1
+          fi
+          grep -q "no synthetic fallback" /tmp/fig.log
+
+  thread-sanitizer:
+    # The advisory slot is lock-free and single-writer/multi-reader. Its first
+    # implementation was a seqlock that tore 414 times in 2.8M reads, so this
+    # code gets a dedicated race detector run rather than relying on the
+    # functional test alone.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Build with ThreadSanitizer
+        run: |
+          cmake -B build-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1" \
+            -DTITANS_ENABLE_CUDA=OFF \
+            -DTITANS_ENABLE_TESTS=ON \
+            -DTITANS_ENABLE_BENCHMARKS=OFF
+          cmake --build build-tsan --parallel
+
+      - name: Run concurrency tests under TSan
+        env:
+          # AdvisorySlot::try_read may copy a ring slot the writer is
+          # overwriting, in the lapped case. That copy is DISCARDED -- the
+          # generation re-read detects it -- but TSan cannot see the discard and
+          # reports the access. This is the standard seqlock-family trade, also
+          # made by the Linux kernel, folly, and Rust's seqlock crate.
+          #
+          # Correctness of the discard is established by
+          # test_advisory_slot_never_tears (0 torn reads in 2.56M under an
+          # adversarial writer), not by TSan. Everything else must be clean.
+          TSAN_OPTIONS: "suppressions=.github/tsan.supp halt_on_error=0 second_deadlock_stack=1"
+        run: ./build-tsan/tests/titans_tests
+
+  address-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Build with ASan + UBSan
+        run: |
+          cmake -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1" \
+            -DTITANS_ENABLE_CUDA=OFF \
+            -DTITANS_ENABLE_TESTS=ON \
+            -DTITANS_ENABLE_BENCHMARKS=OFF
+          cmake --build build-asan --parallel
+
+      - name: Run tests under ASan/UBSan
+        env:
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ./build-asan/tests/titans_tests
+
+  benchmark-self-check:
+    # The benchmark's own calibration check must pass. CI runners are noisy and
+    # often virtualized, so the wall-clock numbers here are meaningless -- what
+    # is being verified is that the harness still resolves a known-cost
+    # operation correctly and exits non-zero when it cannot.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+      - name: Build benchmarks
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTITANS_ENABLE_CUDA=OFF -DTITANS_ENABLE_TESTS=OFF
+          cmake --build build --parallel --target titans_benchmark
+      - name: Harness self-check
+        run: ./build/titans_benchmark --quick --json /tmp/bench.json
+      - name: Results file records what was not controlled
+        # A results file without its caveats is a results file nobody can
+        # weigh. Assert the fingerprint made it in.
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open('/tmp/bench.json'))
+          m = d['machine']
+          assert 'caveats' in m, "no caveats recorded"
+          assert m['cpu_model'], "no cpu model recorded"
+          assert m['compiler'], "no compiler recorded"
+          for r in d['results']:
+              if r['mode'] == 'amortized':
+                  assert not r['has_distribution'], \
+                      f"{r['name']}: amortized result claims a distribution"
+          print(f"ok: {len(d['results'])} results, {len(m['caveats'])} caveats")
+          PY
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: /tmp/bench.json
 
   header-hygiene:
     runs-on: ubuntu-latest

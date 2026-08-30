@@ -1,378 +1,305 @@
-# Titans: High-Performance Hybrid Trading System
+# Titans
 
-> An Event-Driven C++ Framework Integrating Low-Latency Execution with GPU-Accelerated Signals and LLM Analytics
+An event-driven C++20 trading engine with a **hard boundary between a
+nanosecond-scale fast path and an LLM-scale slow lane**, and a measurement
+harness that refuses to report numbers it cannot resolve.
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![C++](https://img.shields.io/badge/C++-20-blue.svg)]()
-[![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)]()
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)]()
+The second half of that sentence is the point. A trading system that publishes
+latency figures without stating how they were measured is not making a claim
+that can be checked. Everything below is reproducible on the commands given, and
+every figure carries the machine state that produced it.
 
-## Overview
+---
 
-Titans is a production-grade trading system framework designed to bridge the gap between low-latency execution and complex model computation. It combines:
+## Why a boundary, and where it sits
 
-- **C++ Core Engine**: Microsecond-level event processing with lock-free data structures
-- **GPU Acceleration**: CUDA-powered signal processing and alpha factor computation
-- **LLM Analytics**: Local LLM integration for automated trading analysis and reporting
+A local language model answers in 10–500 ms. This engine's fast path costs
+single-digit nanoseconds per operation. Six orders of magnitude separate them, so
+the model is never in the request path. It publishes **advisories** — small,
+immutable, explicitly expiring facts — into a slot the fast lane samples with a
+bounded, non-blocking read.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Titans Architecture                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
-│  │   Market     │    │    Core      │    │   Strategy   │      │
-│  │    Data      │───▶│   Event      │───▶│   Engine     │      │
-│  │   Handler    │    │    Bus       │    │              │      │
-│  └──────────────┘    └──────────────┘    └──────────────┘      │
-│         │                   │                   │               │
-│         │                   │                   │               │
-│         ▼                   ▼                   ▼               │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
-│  │   Binary     │    │   Order      │    │    Risk      │      │
-│  │   Logger     │    │    Book      │    │   Manager    │      │
-│  └──────────────┘    └──────────────┘    └──────────────┘      │
-│                             │                                   │
-│                             ▼                                   │
-│                      ┌──────────────┐                          │
-│                      │    CUDA      │                          │
-│                      │   Kernels    │                          │
-│                      └──────────────┘                          │
-│                             │                                   │
-│                             ▼                                   │
-│  ┌──────────────────────────────────────────────────────┐      │
-│  │              Python Analytics Sidecar                 │      │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐     │      │
-│  │  │    LLM     │  │ Streamlit  │  │  Reports   │     │      │
-│  │  │  Analyzer  │  │ Dashboard  │  │ Generator  │     │      │
-│  │  └────────────┘  └────────────┘  └────────────┘     │      │
-│  └──────────────────────────────────────────────────────┘      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+market data ─▶ book ─▶ signal ─▶ risk ─▶ order      FAST LANE   (ns, pinned, no alloc)
+                 │                  ▲
+        offer()  │                  │  current()
+     drops when  ▼                  │  bounded, never waits
+          full  ┌──────────┐  ┌──────────────┐
+                │LaneBridge│  │ AdvisorySlot │
+                └────┬─────┘  └──────▲───────┘
+                     │               │
+                     ▼               │ publish()
+        context ─▶ LLM ─▶ advisory                   SLOW LANE   (ms, may block)
 ```
 
-## Features
+The contract is that **nothing the slow lane does can degrade the fast path**.
+That is asserted, not asserted-and-hoped:
 
-### Core Engine (C++20)
-- **Event-Driven Architecture**: Epoll-based event loop with sub-microsecond latency
-- **Lock-Free Queues**: SPSC/MPSC queues for inter-component communication
-- **Memory Pools**: Zero-allocation runtime with pre-allocated object pools
-- **Binary Logging**: Efficient binary format for market data replay
+```
+$ ./build/tests/titans_tests
+=== Testing Lane Isolation ===
+  [ RUN ] hung slow lane does not slow fast lane
+    fast-lane p99: slow lane draining 610.0 ns, slow lane hung 40.0 ns (0.07x)
+    bridge drop rate while hung: 99.9% (199743 of 200000 dropped)
+  [ OK   ] hung slow lane does not slow fast lane
+  [ RUN ] advisory slot never tears
+    adversarial writer: 2564325 reads, 0 torn, 650 lapped give-ups
+    realistic writer:   7008703 reads, 0 torn, 616 give-ups (99.9912% success)
+  [ OK   ] advisory slot never tears
+```
 
-### GPU Acceleration (CUDA)
-- **Rolling Statistics**: Mean, variance, correlation, z-score
-- **Alpha Factors**: Momentum, mean reversion, volatility
-- **Batch Processing**: Parallel computation across multiple symbols
-- **Technical Indicators**: RSI, MACD, Bollinger Bands
+With the slow lane sleeping 200 ms per item — the latency of a real model — the
+fast lane's p99 is unchanged and the bridge sheds 99.9% of observations. Load
+shedding is the designed behaviour on that edge, and the drop rate is a reported
+metric rather than a swallowed error.
 
-### Trading Components
-- **Order Book**: L2/L3 order book reconstruction
-- **Matching Engine**: Simulated order execution for backtesting
-- **Risk Manager**: Real-time position and exposure monitoring
-- **Shadow Trading**: Paper trading with live market data
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the mechanism, including
+why the advisory slot is a versioned ring rather than a seqlock (the seqlock
+version tore 414 times in 2.8M reads, and the test caught it).
 
-### Analytics (Python)
-- **LLM Integration**: Ollama/llama.cpp for automated analysis
-- **Streamlit Dashboard**: Real-time visualization
-- **Report Generation**: Daily PnL attribution reports
+---
 
-## Quick Start
+## Measured performance
 
-### Prerequisites
+AMD Ryzen 9 5950X, 16 cores, `performance` governor, GCC 15.2, `-O3
+-march=native -flto`. Amortized batch timing, 15 repetitions, median across
+repetitions; minimum in parentheses is the interference-free estimate.
 
-- GCC 11+ or Clang 14+ (C++20 support)
+| Operation | Cost | Throughput |
+|---|---|---|
+| `SPSCQueue::try_push` | 1.21 ns (0.99) | 826 M ops/s |
+| `SPSCQueue::try_pop` | 0.78 ns (0.77) | 1279 M ops/s |
+| `ObjectPool::allocate` | 1.41 ns (1.40) | 708 M ops/s |
+| `ObjectPool::deallocate` | 1.08 ns (1.06) | 926 M ops/s |
+| `operator new`/`delete` *(baseline)* | 11.71 ns (11.26) | 85 M ops/s |
+| `L2OrderBook::update_level` | 24.03 ns (23.70) | 42 M ops/s |
+| `L2OrderBook::best_bid` | 5.45 ns (5.40) | 184 M ops/s |
+| `EventBus::publish` (pre-stamped) | 38.26 ns (37.20) | 26 M ops/s |
+| `EventBus::publish` (auto-timestamp) | 59.83 ns (57.18) | 17 M ops/s |
+
+Reproduce with `./build/titans_benchmark --json results/mine.json`.
+
+**No p99 appears in that table, deliberately.** These operations cost less than
+the 20 ns timing floor measured at startup, so a per-operation distribution is
+not observable and the harness will not print one. What it prints instead is the
+spread between the median and the minimum across repetitions, which tells you
+how busy the host was.
+
+The last two rows are a finding rather than a datum: `EventBus::publish` spends
+21.6 ns — 36% of its cost — on an unconditional `clock_gettime`. Callers that
+already hold an ingress timestamp should use `publish_prestamped()`, which is
+also more correct, since dispatch time is a worse estimate of arrival than the
+stamp taken when the packet landed.
+
+### The benchmark checks itself first
+
+```
+$ ./build/titans_benchmark
+ SECTION 0 - MEASUREMENT METHODOLOGY SELF-CHECK
+
+TSC 3.3999 GHz | single-shot floor: 20.00 ns (p99 30.00 ns) | resolvable above 60.00 ns
+
+Naive clock-bracketed timing, as used before this rewrite:
+  cost of now_ns() itself, measured with now_ns():      40.00 ns (p50)
+  cost of an integer increment, same method:            20.00 ns (p50)
+Same integer increment, amortized batch timing:          0.239 ns/op
+
+VERDICT
+  [confirmed] The naive method reports an integer increment at 20 ns, within a
+  factor of two of the 40 ns clock read used to measure it. An increment does
+  not cost 20 ns. The naive method measures the clock, not the operation.
+  [confirmed] Amortized timing resolves the same increment at 0.239 ns/op,
+  consistent with a single retired ALU op on a 3.40 GHz core.
+```
+
+The run exits non-zero if that check fails.
+
+### What was not controlled
+
+Every results file carries a `caveats` list. On this workstation:
+
+- **No `isolcpus`/`nohz_full`.** The kernel schedules other work on the measured
+  core, so tail percentiles include unrelated interference and are upper bounds.
+- **SMT enabled.** Benchmarks pin to one logical CPU but do not idle its sibling.
+- **Turbo enabled.** Burst and sustained load run at different clocks.
+
+A p99 from this host is not a p99 from a tuned trading server.
+
+---
+
+## The research framework
+
+The slow lane is where an LLM's *context management* stops being prompt
+engineering and becomes a systems problem: an advisory derived from context that
+has since been invalidated is a contaminated inference, and `valid_until` +
+`context_generation` are how its blast radius is bounded.
+
+`include/titans/context/` studies what happens without those controls — how
+different context strategies retain or shed corrupted material, and what that
+does to a model's conclusions.
+
+Two rules govern this code, both enforced by tests rather than convention.
+
+**1. The task must actually require context.** A task solvable from a single
+event cannot distinguish one context strategy from another; every method scores
+the same and any difference is noise.
+
+```
+$ ./build/tests/titans_tests
+=== Testing Task Design ===
+    best context-free global rule:      0.5575 balanced accuracy (chance = 0.5)
+    per-entity rolling median/MAD rule: 0.9592 balanced accuracy
+```
+
+The same audit runs on real market data (below), and `titans_dataset` exits
+non-zero on a dataset that fails it.
+
+**2. Assumed numbers are never presented as findings.**
+`AssumedDegradationModel` computes accuracy from hardcoded multipliers — 0.5 for
+an entity-binding error, 0.7 for stale state. It is genuinely useful for
+exercising the pipeline and catching regressions, and it is genuinely incapable
+of saying anything about a real model, because its ranking of contamination
+types is just the ranking of its constants. `titans_experiment` says so in its
+own output. Claims about models come from `titans_llm_experiment`, which queries
+a live backend and writes every raw response to the results file.
+
+The ablation runner also flags configurations that changed nothing:
+
+```
+$ ./build/titans_experiment
+Configuration        Accuracy   d Clean   Stale Ref       FPR   status
+full                   87.52%    19.81%      93.38%    11.87%
+no_temporal            87.52%    19.81%      93.38%    11.87%   INERT
+no_provenance          86.05%    23.07%      99.01%    13.24%
+no_forgetting          51.78%    11.32%      99.46%    45.73%
+...
+1 of 7 ablations were INERT -- identical to the full system, meaning the
+disabled component never executed:
+  - no_temporal   selective forgetting already caps context age at the
+                  per-entity revisit interval (~50 ms for 50 entities at
+                  1.0 ms spacing), inside the 2.0 s temporal window, so the
+                  window is never the binding constraint.
+```
+
+An identical row is not a result saying the component does not matter; it is the
+experiment saying it cannot tell. It is labelled that way, with the reason.
+
+---
+
+## Real market data
+
+`python/data/fetch_binance.py` pulls aggregated trades from
+[data.binance.vision](https://data.binance.vision/), verifies the published
+SHA256, and writes a manifest recording source URL, checksum, and row count.
+
+Real data has no anomaly column, so the label is constructed **from the future**,
+where no field of the event can reach: a trade is *toxic* if the price moves at
+least `threshold_bps` in the aggressor's favour within `horizon_ms`. That is
+ordinary adverse selection, and it is not recoverable from the trade itself.
+
+```bash
+python python/data/fetch_binance.py --symbol BTCUSDT --date 2024-01-15
+./build/titans_dataset data/raw/BTCUSDT-aggTrades-2024-01-15.csv
+```
+
+```
+  trades:        200000
+  labelled:      199922
+  toxic:         2293 (1.15% of labelled)
+  session drift: +0.094 bps per horizon (removed from the label)
+
+LEAKAGE AUDIT (AUC; 0.5 = chance)
+  event-only features -- these must stay near chance:
+    trade quantity          0.5566   (|dev| 0.0566)
+    trade price             0.5709   (|dev| 0.0709)
+    aggressor side          0.5897   (|dev| 0.0897)
+  context feature -- this must beat chance:
+    signed flow, last 50    0.7631   (|dev| 0.2631)
+```
+
+The audit earned its place immediately: before drift adjustment, aggressor side
+alone scored AUC 0.604 against the label, because BTCUSDT rose from 41 718 to
+42 769 that day and aggressive buys were followed by favourable moves for
+reasons that had nothing to do with informed flow. Subtracting the session's
+mean forward return centres both sides. The tool still reports the residual as
+`[near]` rather than an unqualified pass, because 0.0897 clears the 0.10 limit
+by little.
+
+---
+
+## Build and run
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+cd build && ctest --output-on-failure
+```
+
+| Target | What it does |
+|---|---|
+| `titans_benchmark` | Fast-path latency, with a methodology self-check |
+| `titans_dataset` | Label real trades and audit for leakage |
+| `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
+| `titans_llm_experiment` | Same comparison against a live model |
+| `titans_replay` | Replay a binary market-data log |
+| `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
+| `titans_tests` | 9 modules including lane isolation and task design |
+
+### Running against a live model
+
+```bash
+# GPU
+vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
+./build/titans_llm_experiment --backend vllm --port 8000 --events 1000
+
+# No spare GPU (also what CI uses)
+python python/serving/cpu_shim.py --model Qwen/Qwen2.5-1.5B-Instruct --port 8011
+./build/titans_llm_experiment --backend vllm --port 8011 --events 1000
+```
+
+`titans_llm_experiment` **will not run without a reachable backend**. There is
+no stand-in fallback: a number produced without querying a model is not evidence
+about a model.
+
+Both arms of each comparison consume identical events, identical seeds, and
+identical contamination draws; the only difference is whether the contamination
+reached the prompt. Contamination attempts that could not be applied — too
+little history to draw a stale value from, for instance — are excluded rather
+than counted as treated, so the treatment group is not silently diluted.
+
+---
+
+## Requirements
+
+- GCC 13+ or Clang 16+ (C++20)
 - CMake 3.20+
-- CUDA 11+ (optional, for GPU acceleration)
-- Python 3.10+ (for analytics)
-
-### Building
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/titans.git
-cd titans
-
-# Create build directory
-mkdir build && cd build
-
-# Configure (with CUDA)
-cmake .. -DCMAKE_BUILD_TYPE=Release -DTITANS_ENABLE_CUDA=ON
-
-# Build
-make -j$(nproc)
-
-# Run tests
-ctest --output-on-failure
-```
-
-### Running
+- x86-64 with invariant TSC (`constant_tsc`, `nonstop_tsc`) for the benchmarks
+- CUDA 11+ *(optional)*
+- Python 3.10+ for the data and serving tools
 
 ```bash
-# Run benchmarks
-./titans_benchmark
-
-# Run shadow trading
-./titans_engine --mode shadow --symbols BTCUSDT,ETHUSDT
-
-# Replay historical data
-./titans_replay ./data/BTCUSDT_20240101.bin --stats
+conda create -n titans -c conda-forge python=3.11 numpy pandas scipy \
+    matplotlib seaborn plotly requests pyarrow pytest gtest cmake ninja
 ```
 
-### Docker
+---
 
-```bash
-# Build and run with Docker Compose
-docker-compose up -d
+## Known limitations
 
-# Access dashboard
-open http://localhost:8501
-```
-
-## Research Framework
-
-Titans includes a comprehensive research framework for studying **LLM Context Contamination** in event-driven systems:
-
-### Key Research Components
-
-| Component | Description |
-|-----------|-------------|
-| **Versioned Context** | Entity state with temporal validity and provenance tracking |
-| **Contamination Injector** | Systematic injection of 6 contamination types |
-| **Evaluation Metrics** | Impact, persistence, and mitigation effectiveness |
-| **Experiment Harness** | Automated baseline comparisons and ablation studies |
-| **LLM Integration** | Ollama/vLLM backends for real model experiments |
-| **Distributed Experiments** | Multi-worker parallel execution with GPU monitoring |
-
-### Running Research Experiments
-
-```bash
-# Simulated experiments (no LLM required)
-./titans_experiment
-
-# Real LLM experiments (requires Ollama)
-ollama serve &
-ollama pull llama3.1:8b
-./titans_llm_experiment
-
-# Distributed grid search
-./titans_distributed_experiment --full
-
-# Generate paper figures
-cd python/research
-pip install -r requirements.txt
-python generate_figures.py
-```
-
-See [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) for detailed documentation.
-
-## Project Structure
-
-```
-titans/
-├── include/titans/          # Header files
-│   ├── core/               # Core engine components
-│   │   ├── types.hpp       # Type definitions
-│   │   ├── spsc_queue.hpp  # Lock-free queues
-│   │   ├── memory_pool.hpp # Memory management
-│   │   ├── event_bus.hpp   # Event system
-│   │   ├── http_client.hpp # HTTP client
-│   │   ├── json.hpp        # JSON parser
-│   │   ├── gpu_monitor.hpp # GPU metrics
-│   │   └── debug.hpp       # Debugging utilities
-│   ├── trading/            # Trading components
-│   │   ├── order_book.hpp  # Order book
-│   │   ├── matching_engine.hpp
-│   │   ├── risk_manager.hpp
-│   │   └── shadow_engine.hpp
-│   ├── context/            # Research framework
-│   │   ├── versioned_entity.hpp      # Versioned state
-│   │   ├── contamination_injector.hpp # Contamination injection
-│   │   ├── evaluation_metrics.hpp    # Metrics
-│   │   ├── experiment_harness.hpp    # Experiment runner
-│   │   ├── llm_interface.hpp         # LLM abstraction
-│   │   ├── ollama_backend.hpp        # Ollama/vLLM impl
-│   │   ├── distributed_experiment.hpp # Distributed runner
-│   │   ├── experiment_persistence.hpp # Result storage
-│   │   └── data_adapters.hpp         # Data sources
-│   ├── market_data/        # Market data handling
-│   ├── strategy/           # Strategy framework
-│   └── cuda/               # GPU kernels
-├── src/                    # Implementation files
-├── tests/                  # Unit tests
-├── examples/               # Example programs
-│   ├── run_contamination_experiment.cpp
-│   ├── run_llm_experiment.cpp
-│   └── run_distributed_experiment.cpp
-├── python/                 # Python tools
-│   ├── analytics/          # LLM integration
-│   ├── visualizer/         # Streamlit dashboard
-│   └── research/           # Paper figures
-├── docs/                   # Documentation
-│   ├── RESEARCH_FRAMEWORK.md
-│   ├── API_REFERENCE.md
-│   ├── DEBUGGING_GUIDE.md
-│   └── TROUBLESHOOTING.md
-├── config/                 # Configuration files
-└── data/                   # Data directory
-```
-
-## Performance
-
-### Benchmark Results (AMD Ryzen 9, RTX 4090)
-
-| Component | Latency (P99) | Throughput |
-|-----------|---------------|------------|
-| SPSC Queue Push | 45 ns | 22M ops/sec |
-| SPSC Queue Pop | 38 ns | 26M ops/sec |
-| Memory Pool Alloc | 28 ns | 35M ops/sec |
-| Event Bus Publish | 125 ns | 8M events/sec |
-| L2 Book Update | 350 ns | 2.8M updates/sec |
-| L3 Book Add Order | 680 ns | 1.5M orders/sec |
-
-### Latency Histogram
-
-```
-Event Processing Latency (nanoseconds):
-     <100 ████████████████████████████████████████ 45%
-  100-200 ██████████████████████████░░░░░░░░░░░░░░ 30%
-  200-500 ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 15%
-  500-1000 ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 8%
-    >1000 ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2%
-```
-
-## Configuration
-
-### Engine Configuration
-
-```yaml
-# config/engine.yaml
-engine:
-  mode: shadow
-  symbols:
-    - BTCUSDT
-    - ETHUSDT
-
-market_data:
-  source: binance
-  websocket:
-    host: stream.binance.com
-    port: 9443
-
-risk:
-  max_position_size: 10.0
-  max_daily_loss: 1000.0
-  max_drawdown_pct: 5.0
-
-logging:
-  level: info
-  path: ./data/logs
-```
-
-### Strategy Configuration
-
-```yaml
-# config/strategy.yaml
-strategies:
-  - name: momentum_20
-    type: momentum
-    params:
-      lookback: 20
-      threshold: 0.02
-    symbols: [BTCUSDT]
-
-  - name: mean_reversion
-    type: mean_reversion
-    params:
-      window: 50
-      z_threshold: 2.0
-    symbols: [ETHUSDT]
-```
-
-## API Reference
-
-### Core Types
-
-```cpp
-// Price and quantity (fixed-point, 8 decimals)
-using Price = int64_t;
-using Quantity = int64_t;
-
-// Convert to/from double
-Price p = to_price(50000.0);
-double d = from_price(p);
-
-// Timestamp (nanoseconds)
-Timestamp ts = now_ns();
-```
-
-### Event Bus
-
-```cpp
-EventBus bus;
-
-// Subscribe to events
-bus.subscribe<MarketDataEvent>(EventType::MarketDataSnapshot,
-    [](const MarketDataEvent& event) {
-        // Handle event
-    });
-
-// Publish events
-MarketDataEvent event;
-bus.publish(event);
-```
-
-### Order Book
-
-```cpp
-L2OrderBook book(Symbol("BTCUSDT"));
-
-// Update levels
-book.update_level(Side::Buy, to_price(50000), to_quantity(1.0));
-
-// Query
-auto best_bid = book.best_bid();
-auto mid = book.mid_price();
-double imbalance = book.imbalance(5);
-```
-
-## Development
-
-### Code Style
-
-This project follows the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html).
-
-```bash
-# Format code
-clang-format -i src/**/*.cpp include/**/*.hpp
-
-# Run linter
-clang-tidy src/**/*.cpp -- -std=c++20
-```
-
-### Testing
-
-```bash
-# Run all tests
-cd build && ctest
-
-# Run specific test
-./titans_tests --gtest_filter="*SPSCQueue*"
-
-# Run with coverage
-cmake .. -DCMAKE_BUILD_TYPE=Debug -DCOVERAGE=ON
-make && make coverage
-```
+- **No live market connectivity.** `websocket_client.hpp` speaks plain TCP with
+  no TLS; Binance's stream endpoint is `wss://` only. Historical replay works.
+- **`titans_engine` feeds itself a random walk.** It demonstrates the event
+  pipeline, not a strategy.
+- **Benchmarks run on a non-isolated workstation.** See the caveats above.
+- **CUDA kernels are not yet covered by the measurement rewrite.**
+- **LLM experiment scale depends on available hardware.** The program warns
+  below 200 events per arm and declines to present small deltas as effects.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- [Binance Public Data](https://data.binance.vision/) for market data
-- [Ollama](https://ollama.ai/) for local LLM inference
-- The HFT community for inspiration and best practices
+MIT — see [LICENSE](LICENSE).
 
 ## Disclaimer
 
-This software is for educational and research purposes only. Trading cryptocurrencies carries significant risk. Always use paper trading / shadow mode before deploying any strategy with real capital.
+Research and educational software. Nothing here is trading advice, and no part
+of it has been run against live capital.

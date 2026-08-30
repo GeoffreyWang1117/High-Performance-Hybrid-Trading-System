@@ -40,6 +40,7 @@ extern bool run_json_tests();
 extern bool run_lane_isolation_tests();
 extern bool run_task_design_tests();
 extern bool run_statistics_tests();
+extern bool run_binance_dataset_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -65,7 +66,8 @@ int main(int argc, char* argv[]) {
         {"JSON", run_json_tests},
         {"Lane Isolation", run_lane_isolation_tests},
         {"Task Design", run_task_design_tests},
-        {"Statistics", run_statistics_tests}
+        {"Statistics", run_statistics_tests},
+        {"Binance Dataset", run_binance_dataset_tests}
     };
 
     for (const auto& [name, test_func] : modules) {

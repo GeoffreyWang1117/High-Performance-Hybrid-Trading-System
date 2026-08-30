@@ -19,6 +19,7 @@ if(GTest_FOUND)
         test_lane_isolation.cpp
         test_task_design.cpp
         test_statistics.cpp
+        test_binance_dataset.cpp
     )
 
     target_link_libraries(titans_tests
@@ -47,6 +48,7 @@ else()
         test_lane_isolation.cpp
         test_task_design.cpp
         test_statistics.cpp
+        test_binance_dataset.cpp
     )
 
     target_link_libraries(titans_tests
