@@ -68,6 +68,19 @@ struct Advisory {
     /// Multiplier the fast lane applies to position limits, in [0, 1].
     float size_multiplier = 1.0f;
 
+    /**
+     * @brief Which side the risk is on: +1 buy-side, -1 sell-side, 0 undirected.
+     *
+     * Risk is usually directional and an undirected advisory throws that away.
+     * Measured concretely in the lanes demo: a slow lane that flagged large
+     * |order flow| without saying WHICH way scored an informedness of
+     * +0.013 +/- 0.020 -- indistinguishable from zero -- even though the same
+     * underlying feature reaches AUC 0.76 against the label when the sign is
+     * kept aligned with the trade under review. The fast lane is expected to
+     * act only when its own side matches this one.
+     */
+    int8_t risk_direction = 0;
+
     /// When the slow lane produced this.
     Timestamp issued_at = 0;
 

@@ -140,6 +140,12 @@ add_executable(titans_dataset
 )
 target_link_libraries(titans_dataset PRIVATE titans_core)
 
+# End-to-end fast/slow lane demonstration over real market data
+add_executable(titans_lanes
+    src/tools/lanes_demo_main.cpp
+)
+target_link_libraries(titans_lanes PRIVATE titans_core Threads::Threads)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark
