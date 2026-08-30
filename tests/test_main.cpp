@@ -41,6 +41,7 @@ extern bool run_lane_isolation_tests();
 extern bool run_task_design_tests();
 extern bool run_statistics_tests();
 extern bool run_binance_dataset_tests();
+extern bool run_context_contamination_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -67,7 +68,8 @@ int main(int argc, char* argv[]) {
         {"Lane Isolation", run_lane_isolation_tests},
         {"Task Design", run_task_design_tests},
         {"Statistics", run_statistics_tests},
-        {"Binance Dataset", run_binance_dataset_tests}
+        {"Binance Dataset", run_binance_dataset_tests},
+        {"Context Contamination", run_context_contamination_tests}
     };
 
     for (const auto& [name, test_func] : modules) {

@@ -20,6 +20,7 @@ if(GTest_FOUND)
         test_task_design.cpp
         test_statistics.cpp
         test_binance_dataset.cpp
+        test_context_contamination.cpp
     )
 
     target_link_libraries(titans_tests
@@ -49,6 +50,7 @@ else()
         test_task_design.cpp
         test_statistics.cpp
         test_binance_dataset.cpp
+        test_context_contamination.cpp
     )
 
     target_link_libraries(titans_tests
