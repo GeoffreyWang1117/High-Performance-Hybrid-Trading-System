@@ -1,381 +1,360 @@
 /**
  * @file benchmark_main.cpp
- * @brief Comprehensive Benchmark Suite for Titans
+ * @brief Latency and throughput benchmarks for the Titans fast path.
  *
- * Measures latency and throughput of all critical components.
- * Generates latency histograms and performance reports.
+ * Every number this program prints is accompanied by (a) the measurement mode
+ * used, (b) the machine state that produced it, and (c) the error sources that
+ * were NOT controlled. Results are also written as JSON for regression
+ * tracking.
+ *
+ * The first section is a methodology self-check. It reproduces the naive
+ * timing approach and shows why it cannot be used at this cost scale; the
+ * check FAILS the build's benchmark step if the harness itself is miscalibrated.
+ *
+ * Usage:
+ *   titans_benchmark [--json <path>] [--core <physical_core_index>]
+ *                    [--reps <n>] [--quick]
  */
 
+#include "titans/bench/harness.hpp"
 #include "titans/core/types.hpp"
 #include "titans/core/spsc_queue.hpp"
 #include "titans/core/memory_pool.hpp"
 #include "titans/core/event_bus.hpp"
 #include "titans/trading/order_book.hpp"
 
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <vector>
-#include <algorithm>
-#include <numeric>
-#include <chrono>
-#include <cmath>
-#include <iomanip>
 
 using namespace titans;
+using namespace titans::bench;
 
-// Latency histogram
-class LatencyHistogram {
-public:
-    void record(int64_t value_ns) {
-        samples_.push_back(value_ns);
-    }
+namespace {
 
-    void compute() {
-        if (samples_.empty()) return;
-
-        std::sort(samples_.begin(), samples_.end());
-
-        count_ = samples_.size();
-        min_ = samples_.front();
-        max_ = samples_.back();
-        sum_ = std::accumulate(samples_.begin(), samples_.end(), 0LL);
-        mean_ = static_cast<double>(sum_) / count_;
-
-        // Percentiles
-        p50_ = percentile(50);
-        p90_ = percentile(90);
-        p99_ = percentile(99);
-        p999_ = percentile(99.9);
-
-        // Standard deviation
-        double sq_sum = 0;
-        for (auto v : samples_) {
-            double diff = v - mean_;
-            sq_sum += diff * diff;
-        }
-        stddev_ = std::sqrt(sq_sum / count_);
-    }
-
-    int64_t percentile(double p) const {
-        if (samples_.empty()) return 0;
-        size_t idx = static_cast<size_t>(samples_.size() * p / 100);
-        return samples_[std::min(idx, samples_.size() - 1)];
-    }
-
-    void print(const std::string& name) const {
-        std::cout << "\n=== " << name << " ===\n";
-        std::cout << std::fixed << std::setprecision(2);
-        std::cout << "Count:  " << count_ << "\n";
-        std::cout << "Min:    " << min_ << " ns (" << min_ / 1000.0 << " us)\n";
-        std::cout << "Max:    " << max_ << " ns (" << max_ / 1000.0 << " us)\n";
-        std::cout << "Mean:   " << mean_ << " ns (" << mean_ / 1000.0 << " us)\n";
-        std::cout << "Stddev: " << stddev_ << " ns\n";
-        std::cout << "P50:    " << p50_ << " ns (" << p50_ / 1000.0 << " us)\n";
-        std::cout << "P90:    " << p90_ << " ns (" << p90_ / 1000.0 << " us)\n";
-        std::cout << "P99:    " << p99_ << " ns (" << p99_ / 1000.0 << " us)\n";
-        std::cout << "P99.9:  " << p999_ << " ns (" << p999_ / 1000.0 << " us)\n";
-
-        // Throughput
-        if (sum_ > 0) {
-            double throughput = count_ * 1e9 / sum_;
-            std::cout << "Throughput: " << throughput << " ops/sec\n";
-        }
-    }
-
-    void clear() {
-        samples_.clear();
-        count_ = min_ = max_ = sum_ = p50_ = p90_ = p99_ = p999_ = 0;
-        mean_ = stddev_ = 0;
-    }
-
-private:
-    std::vector<int64_t> samples_;
-    size_t count_ = 0;
-    int64_t min_ = 0, max_ = 0, sum_ = 0;
-    int64_t p50_ = 0, p90_ = 0, p99_ = 0, p999_ = 0;
-    double mean_ = 0, stddev_ = 0;
+struct Options {
+    std::string json_path;
+    size_t core_index = 4;
+    int reps = 15;
+    uint64_t batch = 2000000;
+    uint64_t per_op_iters = 200000;
 };
 
-// Benchmark: SPSC Queue
-void benchmark_spsc_queue() {
-    std::cout << "\n### SPSC Queue Benchmark ###\n";
-
-    SPSCQueue<int64_t, 65536> queue;
-    LatencyHistogram push_hist, pop_hist;
-
-    const int warmup = 10000;
-    const int iterations = 1000000;
-
-    // Warmup
-    for (int i = 0; i < warmup; ++i) {
-        queue.try_push(i);
-    }
-    int64_t val;
-    while (queue.try_pop(val));
-
-    // Benchmark push
-    for (int i = 0; i < iterations; ++i) {
-        auto start = now_ns();
-        queue.try_push(i);
-        push_hist.record(now_ns() - start);
-    }
-
-    // Benchmark pop
-    for (int i = 0; i < iterations; ++i) {
-        auto start = now_ns();
-        queue.try_pop(val);
-        pop_hist.record(now_ns() - start);
-    }
-
-    push_hist.compute();
-    pop_hist.compute();
-
-    push_hist.print("SPSC Queue Push");
-    pop_hist.print("SPSC Queue Pop");
-}
-
-// Benchmark: Memory Pool
-void benchmark_memory_pool() {
-    std::cout << "\n### Memory Pool Benchmark ###\n";
-
-    ObjectPool<Order, 4096> pool;
-    LatencyHistogram alloc_hist, dealloc_hist;
-
-    const int iterations = 100000;
-    std::vector<Order*> orders;
-    orders.reserve(iterations);
-
-    // Benchmark allocate
-    for (int i = 0; i < iterations; ++i) {
-        auto start = now_ns();
-        Order* order = pool.allocate();
-        alloc_hist.record(now_ns() - start);
-        orders.push_back(order);
-    }
-
-    // Benchmark deallocate
-    for (Order* order : orders) {
-        auto start = now_ns();
-        pool.deallocate(order);
-        dealloc_hist.record(now_ns() - start);
-    }
-
-    alloc_hist.compute();
-    dealloc_hist.compute();
-
-    alloc_hist.print("Memory Pool Allocate");
-    dealloc_hist.print("Memory Pool Deallocate");
-
-    // Compare with new/delete
-    LatencyHistogram new_hist, delete_hist;
-    std::vector<Order*> new_orders;
-    new_orders.reserve(iterations);
-
-    for (int i = 0; i < iterations; ++i) {
-        auto start = now_ns();
-        Order* order = new Order();
-        new_hist.record(now_ns() - start);
-        new_orders.push_back(order);
-    }
-
-    for (Order* order : new_orders) {
-        auto start = now_ns();
-        delete order;
-        delete_hist.record(now_ns() - start);
-    }
-
-    new_hist.compute();
-    delete_hist.compute();
-
-    new_hist.print("new/delete (new)");
-    delete_hist.print("new/delete (delete)");
-}
-
-// Benchmark: Event Bus
-void benchmark_event_bus() {
-    std::cout << "\n### Event Bus Benchmark ###\n";
-
-    EventBus bus;
-    LatencyHistogram publish_hist;
-    int received = 0;
-
-    bus.subscribe<MarketDataEvent>(EventType::MarketDataSnapshot,
-        [&received](const MarketDataEvent&) {
-            ++received;
-        });
-
-    const int iterations = 1000000;
-
-    for (int i = 0; i < iterations; ++i) {
-        MarketDataEvent event;
-        auto start = now_ns();
-        bus.publish(event);
-        publish_hist.record(now_ns() - start);
-    }
-
-    publish_hist.compute();
-    publish_hist.print("Event Bus Publish (1 handler)");
-
-    // Multiple handlers
-    EventBus bus2;
-    LatencyHistogram multi_hist;
-    int handlers = 5;
-
-    for (int h = 0; h < handlers; ++h) {
-        bus2.subscribe<MarketDataEvent>(EventType::MarketDataSnapshot,
-            [](const MarketDataEvent&) {});
-    }
-
-    for (int i = 0; i < iterations; ++i) {
-        MarketDataEvent event;
-        auto start = now_ns();
-        bus2.publish(event);
-        multi_hist.record(now_ns() - start);
-    }
-
-    multi_hist.compute();
-    multi_hist.print("Event Bus Publish (5 handlers)");
-}
-
-// Benchmark: Order Book
-void benchmark_order_book() {
-    std::cout << "\n### Order Book Benchmark ###\n";
-
-    // L2 Order Book
-    {
-        L2OrderBook book(Symbol("BTCUSDT"));
-        LatencyHistogram update_hist, query_hist;
-
-        const int iterations = 100000;
-
-        // Benchmark updates
-        for (int i = 0; i < iterations; ++i) {
-            Price price = to_price(50000.0 + (i % 1000) * 0.1);
-            Quantity qty = to_quantity(1.0 + (i % 100) * 0.1);
-            Side side = (i % 2 == 0) ? Side::Buy : Side::Sell;
-
-            auto start = now_ns();
-            book.update_level(side, price, qty);
-            update_hist.record(now_ns() - start);
+Options parse_args(int argc, char** argv) {
+    Options o;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--json" && i + 1 < argc) {
+            o.json_path = argv[++i];
+        } else if (a == "--core" && i + 1 < argc) {
+            o.core_index = static_cast<size_t>(std::atoi(argv[++i]));
+        } else if (a == "--reps" && i + 1 < argc) {
+            o.reps = std::atoi(argv[++i]);
+        } else if (a == "--quick") {
+            o.reps = 5;
+            o.batch = 200000;
+            o.per_op_iters = 20000;
+        } else if (a == "--help" || a == "-h") {
+            std::printf(
+                "Usage: titans_benchmark [--json PATH] [--core N] [--reps N] [--quick]\n");
+            std::exit(0);
         }
-
-        // Benchmark queries
-        for (int i = 0; i < iterations; ++i) {
-            auto start = now_ns();
-            auto bid = book.best_bid();
-            auto ask = book.best_ask();
-            (void)bid;
-            (void)ask;
-            query_hist.record(now_ns() - start);
-        }
-
-        update_hist.compute();
-        query_hist.compute();
-
-        update_hist.print("L2 Book Update");
-        query_hist.print("L2 Book Query (best bid/ask)");
     }
-
-    // L3 Order Book
-    {
-        L3OrderBook book(Symbol("BTCUSDT"));
-        LatencyHistogram add_hist, cancel_hist, execute_hist;
-
-        const int iterations = 50000;
-        std::vector<OrderId> order_ids;
-        order_ids.reserve(iterations);
-
-        // Benchmark add orders
-        for (int i = 0; i < iterations; ++i) {
-            Price price = to_price(50000.0 + (i % 500) * 0.1);
-            Quantity qty = to_quantity(1.0);
-            Side side = (i % 2 == 0) ? Side::Buy : Side::Sell;
-
-            auto start = now_ns();
-            OrderId id = book.add_order(side, price, qty);
-            add_hist.record(now_ns() - start);
-            order_ids.push_back(id);
-        }
-
-        // Benchmark execute market orders
-        for (int i = 0; i < 1000; ++i) {
-            Side side = (i % 2 == 0) ? Side::Buy : Side::Sell;
-
-            auto start = now_ns();
-            book.execute_market_order(side, to_quantity(1.0));
-            execute_hist.record(now_ns() - start);
-        }
-
-        // Benchmark cancel orders
-        for (OrderId id : order_ids) {
-            auto start = now_ns();
-            book.cancel_order(id);
-            cancel_hist.record(now_ns() - start);
-        }
-
-        add_hist.compute();
-        cancel_hist.compute();
-        execute_hist.compute();
-
-        add_hist.print("L3 Book Add Order");
-        cancel_hist.print("L3 Book Cancel Order");
-        execute_hist.print("L3 Book Execute Market Order");
-    }
+    return o;
 }
 
-// Benchmark: Timestamp
-void benchmark_timestamp() {
-    std::cout << "\n### Timestamp Benchmark ###\n";
+// ============================================================================
+// Section 0: methodology self-check
+// ============================================================================
 
-    LatencyHistogram hist;
-    const int iterations = 1000000;
+/**
+ * @brief Demonstrate that naive clock-bracketed timing is invalid here.
+ *
+ * Measures, using the SAME naive method the pre-rewrite benchmark used:
+ *   (a) the cost of `now_ns()` itself, and
+ *   (b) the cost of a trivial operation (an integer increment).
+ *
+ * If the method were valid, (b) would be far smaller than (a) and both would
+ * be stable. In practice (b) comes out comparable to or larger than the real
+ * cost of (a), because both are dominated by clock overhead. Reporting (b) as
+ * "operation latency" -- which the old benchmark did -- is reporting jitter.
+ *
+ * @return true if the harness is calibrated and the demonstration held.
+ */
+bool methodology_self_check(Harness& h) {
+    std::printf("\n");
+    std::printf("================================================================\n");
+    std::printf(" SECTION 0 - MEASUREMENT METHODOLOGY SELF-CHECK\n");
+    std::printf("================================================================\n\n");
 
-    for (int i = 0; i < iterations; ++i) {
-        auto start = now_ns();
-        volatile Timestamp ts = now_ns();
-        (void)ts;
-        hist.record(now_ns() - start);
+    std::printf("%s\n\n", h.clock().describe().c_str());
+
+    // (a) Naive measurement of the clock call itself.
+    constexpr int kN = 200000;
+    std::vector<int64_t> naive(kN);
+    for (int i = 0; i < kN; ++i) {
+        const auto t0 = now_ns();
+        do_not_optimize(now_ns());
+        naive[i] = now_ns() - t0;
+    }
+    std::sort(naive.begin(), naive.end());
+    const double naive_clock_p50 = static_cast<double>(naive[kN / 2]);
+
+    // (b) Naive measurement of an integer increment (true cost: << 1 ns).
+    volatile int64_t counter = 0;
+    std::vector<int64_t> naive_op(kN);
+    for (int i = 0; i < kN; ++i) {
+        const auto t0 = now_ns();
+        counter = counter + 1;
+        naive_op[i] = now_ns() - t0;
+    }
+    std::sort(naive_op.begin(), naive_op.end());
+    const double naive_op_p50 = static_cast<double>(naive_op[kN / 2]);
+    do_not_optimize(counter);
+
+    // (c) The same increment, measured correctly (amortized).
+    volatile int64_t counter2 = 0;
+    const auto amortized = h.measure_amortized(
+        "integer increment (reference)", 20000000, 5,
+        [&counter2] { counter2 = counter2 + 1; });
+
+    std::printf("Naive clock-bracketed timing, as used before this rewrite:\n");
+    std::printf("  cost of now_ns() itself, measured with now_ns():   %8.2f ns (p50)\n",
+                naive_clock_p50);
+    std::printf("  cost of an integer increment, same method:         %8.2f ns (p50)\n",
+                naive_op_p50);
+    std::printf("  clock granularity floor (rdtsc, this harness):     %8.2f ns\n",
+                h.clock().noise_floor_ns());
+    std::printf("\nSame integer increment, amortized batch timing:      %8.3f ns/op\n",
+                amortized.mean_ns);
+
+    const bool contradiction = (naive_op_p50 >= naive_clock_p50 * 0.5);
+    const bool amortized_sane = (amortized.mean_ns < 5.0);
+
+    std::printf("\nVERDICT\n");
+    if (contradiction) {
+        std::printf(
+            "  [confirmed] The naive method reports an integer increment at %.0f ns,\n"
+            "  within a factor of two of the %.0f ns clock read used to measure it.\n"
+            "  An increment does not cost %.0f ns. The naive method measures the\n"
+            "  clock, not the operation, and any per-op figure it produced at this\n"
+            "  scale -- including every number in the pre-rewrite README table --\n"
+            "  is timing noise.\n",
+            naive_op_p50, naive_clock_p50, naive_op_p50);
+    } else {
+        std::printf("  [unexpected] Naive method did not exhibit the expected floor.\n"
+                    "  Clock may be unusually cheap on this host; interpret with care.\n");
+    }
+    if (amortized_sane) {
+        std::printf(
+            "  [confirmed] Amortized timing resolves the same increment at %.3f ns/op,\n"
+            "  consistent with a single retired ALU op on a %.2f GHz core.\n"
+            "  The harness is calibrated.\n",
+            amortized.mean_ns, h.fingerprint().tsc_ghz);
+    } else {
+        std::printf("  [FAIL] Amortized timing returned %.3f ns/op for an integer\n"
+                    "  increment. The harness is NOT calibrated; results below are\n"
+                    "  not trustworthy.\n", amortized.mean_ns);
+    }
+    return amortized_sane;
+}
+
+// ============================================================================
+// Fast-path component benchmarks
+// ============================================================================
+
+std::vector<BenchmarkResult> run_spsc(Harness& h, const Options& o) {
+    static SPSCQueue<int64_t, 65536> q;
+    std::vector<BenchmarkResult> out;
+
+    // Push: drain in setup so the batch never hits a full queue. Batch is
+    // capped at capacity-1 because a full queue turns try_push into a
+    // different (and much cheaper) operation.
+    constexpr uint64_t kCap = 65535;
+    out.push_back(h.measure_amortized(
+        "SPSCQueue::try_push", kCap, o.reps,
+        [] { static int64_t v = 0; do_not_optimize(q.try_push(v++)); },
+        [] { int64_t sink; while (q.try_pop(sink)) { do_not_optimize(sink); } }));
+
+    out.push_back(h.measure_amortized(
+        "SPSCQueue::try_pop", kCap, o.reps,
+        [] { int64_t v; do_not_optimize(q.try_pop(v)); },
+        [] {
+            int64_t sink; while (q.try_pop(sink)) { do_not_optimize(sink); }
+            for (uint64_t i = 0; i < kCap; ++i) q.try_push(static_cast<int64_t>(i));
+        }));
+
+    return out;
+}
+
+std::vector<BenchmarkResult> run_memory_pool(Harness& h, const Options& o) {
+    static ObjectPool<Order, 4096> pool;
+    static std::vector<Order*> held;
+    held.reserve(4096);
+    std::vector<BenchmarkResult> out;
+
+    constexpr uint64_t kBatch = 4000;
+    out.push_back(h.measure_amortized(
+        "ObjectPool::allocate", kBatch, o.reps,
+        [] { Order* p = pool.allocate(); do_not_optimize(p); held.push_back(p); },
+        [] { for (Order* p : held) pool.deallocate(p); held.clear(); }));
+
+    out.push_back(h.measure_amortized(
+        "ObjectPool::deallocate", kBatch, o.reps,
+        [] { if (!held.empty()) { pool.deallocate(held.back()); held.pop_back(); } },
+        [] {
+            for (Order* p : held) pool.deallocate(p);
+            held.clear();
+            for (uint64_t i = 0; i < kBatch; ++i) held.push_back(pool.allocate());
+        }));
+
+    // Baseline for comparison: the allocator the pool replaces.
+    out.push_back(h.measure_amortized(
+        "operator new/delete (baseline)", 100000, o.reps,
+        [] { Order* p = new Order(); do_not_optimize(p); delete p; }));
+
+    return out;
+}
+
+std::vector<BenchmarkResult> run_event_bus(Harness& h, const Options& o) {
+    static EventBus bus;
+    static uint64_t sink = 0;
+    static bool subscribed = false;
+    if (!subscribed) {
+        bus.subscribe<MarketDataEvent>(
+            EventType::MarketDataSnapshot,
+            [](const MarketDataEvent& e) { sink += static_cast<uint64_t>(e.last_price); });
+        subscribed = true;
     }
 
-    hist.compute();
-    hist.print("now_ns() call");
+    std::vector<BenchmarkResult> out;
+
+    // Pre-stamped: measures dispatch only.
+    out.push_back(h.measure_amortized(
+        "EventBus::publish (timestamp preset)", 200000, o.reps,
+        [] {
+            MarketDataEvent e;
+            e.type = EventType::MarketDataSnapshot;
+            e.timestamp = 1;                 // non-zero: skips the internal clock read
+            e.last_price = to_price(50000.0);
+            bus.publish(e);
+        }));
+
+    // Unstamped: the path an ordinary caller takes. The delta between the two
+    // is the cost of the clock_gettime that publish() performs on the hot path.
+    out.push_back(h.measure_amortized(
+        "EventBus::publish (auto-timestamp)", 200000, o.reps,
+        [] {
+            MarketDataEvent e;
+            e.type = EventType::MarketDataSnapshot;
+            e.timestamp = 0;                 // triggers now_ns() inside publish()
+            e.last_price = to_price(50000.0);
+            bus.publish(e);
+        }));
+
+    do_not_optimize(sink);
+    return out;
 }
 
-void print_summary() {
-    std::cout << "\n\n";
-    std::cout << "=========================================\n";
-    std::cout << "           BENCHMARK SUMMARY             \n";
-    std::cout << "=========================================\n";
-    std::cout << "\nKey Latencies (P99):\n";
-    std::cout << "  - SPSC Push:        ~50-100 ns\n";
-    std::cout << "  - SPSC Pop:         ~50-100 ns\n";
-    std::cout << "  - Memory Pool:      ~20-50 ns\n";
-    std::cout << "  - Event Publish:    ~100-200 ns\n";
-    std::cout << "  - L2 Book Update:   ~200-500 ns\n";
-    std::cout << "  - L3 Book Add:      ~500-1000 ns\n";
-    std::cout << "\nTarget: P99 < 10 microseconds for hot path\n";
-    std::cout << "=========================================\n";
+std::vector<BenchmarkResult> run_order_book(Harness& h, const Options& o) {
+    static L2OrderBook book{Symbol("BTCUSDT")};
+    std::vector<BenchmarkResult> out;
+
+    // Steady-state update over a bounded set of levels: the realistic pattern
+    // for an L2 feed. Growing the book without bound would measure map growth.
+    constexpr uint64_t kLevels = 50;
+    out.push_back(h.measure_amortized(
+        "L2OrderBook::update_level (steady state)", 100000, o.reps,
+        [] {
+            static uint64_t i = 0;
+            const int lvl = static_cast<int>(i++ % kLevels);
+            book.update_level(Side::Buy, to_price(50000.0 - lvl), to_quantity(1.0 + lvl));
+        },
+        [] {
+            for (uint64_t l = 0; l < kLevels; ++l) {
+                book.update_level(Side::Buy, to_price(50000.0 - l), to_quantity(1.0));
+                book.update_level(Side::Sell, to_price(50001.0 + l), to_quantity(1.0));
+            }
+        }));
+
+    out.push_back(h.measure_amortized(
+        "L2OrderBook::best_bid", 1000000, o.reps,
+        [] { do_not_optimize(book.best_bid()); }));
+
+    return out;
 }
 
-int main(int argc, char* argv[]) {
-    std::cout << R"(
- _____ _ _                  ____                  _                          _
-|_   _(_) |_ __ _ _ __  ___| __ )  ___ _ __   ___| |__  _ __ ___   __ _ _ __| | __
-  | | | | __/ _` | '_ \/ __|  _ \ / _ \ '_ \ / __| '_ \| '_ ` _ \ / _` | '__| |/ /
-  | | | | || (_| | | | \__ \ |_) |  __/ | | | (__| | | | | | | | | (_| | |  |   <
-  |_| |_|\__\__,_|_| |_|___/____/ \___|_| |_|\___|_| |_|_| |_| |_|\__,_|_|  |_|\_\
+// ============================================================================
+// Output
+// ============================================================================
 
-)";
+void write_json(const std::string& path,
+                const MachineFingerprint& fp,
+                const std::vector<BenchmarkResult>& results) {
+    std::ofstream f(path);
+    if (!f) {
+        std::fprintf(stderr, "warning: could not write %s\n", path.c_str());
+        return;
+    }
+    f << "{\n";
+    f << "  \"schema\": \"titans.benchmark.v2\",\n";
+    f << "  \"machine\": " << fp.to_json(4) << ",\n";
+    f << "  \"results\": [\n";
+    for (size_t i = 0; i < results.size(); ++i) {
+        f << "    " << Harness::result_to_json(results[i], 6);
+        if (i + 1 < results.size()) f << ",";
+        f << "\n";
+    }
+    f << "  ]\n";
+    f << "}\n";
+    std::printf("\nResults written to %s\n", path.c_str());
+}
 
-    std::cout << "Running comprehensive benchmark suite...\n";
-    std::cout << "Please wait, this may take a few minutes.\n";
+}  // namespace
 
-    benchmark_timestamp();
-    benchmark_spsc_queue();
-    benchmark_memory_pool();
-    benchmark_event_bus();
-    benchmark_order_book();
+int main(int argc, char** argv) {
+    const Options opts = parse_args(argc, argv);
 
-    print_summary();
+    std::printf("Titans fast-path benchmarks\n");
 
+    Harness h(opts.core_index);
+    if (!h.pinned()) {
+        std::fprintf(stderr,
+                     "warning: failed to pin to a core; measurements will be noisy\n");
+    }
+    h.fingerprint().print();
+
+    const bool calibrated = methodology_self_check(h);
+
+    std::printf("\n");
+    std::printf("================================================================\n");
+    std::printf(" FAST-PATH COMPONENT LATENCY\n");
+    std::printf("================================================================\n");
+    std::printf(
+        "\nAll figures below are amortized batch timings: %d repetitions,\n"
+        "median across repetitions reported as cost, minimum reported as the\n"
+        "interference-free estimate. 'spread' is how far the median sits above\n"
+        "the minimum -- large spread means the host was busy, not that the\n"
+        "operation is slow. These operations cost less than the %.1f ns timing\n"
+        "floor, so no per-operation p99 is measurable and none is reported.\n",
+        opts.reps, h.clock().noise_floor_ns());
+
+    std::vector<BenchmarkResult> all;
+    for (auto* fn : {&run_spsc, &run_memory_pool, &run_event_bus, &run_order_book}) {
+        auto part = (*fn)(h, opts);
+        all.insert(all.end(), part.begin(), part.end());
+    }
+
+    Harness::print_header();
+    for (const auto& r : all) Harness::print_result(r);
+
+    if (!opts.json_path.empty()) write_json(opts.json_path, h.fingerprint(), all);
+
+    if (!calibrated) {
+        std::fprintf(stderr, "\nFAILED: harness self-check did not pass.\n");
+        return 1;
+    }
+    std::printf("\nSelf-check passed.\n");
     return 0;
 }

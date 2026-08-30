@@ -20,6 +20,8 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG -fsanitize=address,undefined")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto")
 
+string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
+
 # Options
 option(TITANS_ENABLE_CUDA "Enable CUDA support" ON)
 option(TITANS_ENABLE_TESTS "Enable unit tests" ON)
@@ -136,10 +138,11 @@ target_link_libraries(titans_replay PRIVATE titans_market_data titans_trading)
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark
         src/benchmark/benchmark_main.cpp
-        src/benchmark/latency_benchmark.cpp
-        src/benchmark/throughput_benchmark.cpp
     )
     target_link_libraries(titans_benchmark PRIVATE titans_core titans_trading)
+    # Record the exact flags used, so every results file states how it was built.
+    target_compile_definitions(titans_benchmark PRIVATE
+        TITANS_BUILD_FLAGS="${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE_UPPER}}")
 endif()
 
 # Research experiment executables
