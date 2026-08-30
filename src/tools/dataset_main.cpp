@@ -132,6 +132,18 @@ int main(int argc, char** argv) {
                 cfg.threshold_bps, static_cast<long>(cfg.horizon_ms));
     ds.stats().print();
 
+    if (ds.truncated()) {
+        std::printf(
+            "\n  WARNING: --max-rows truncated the file at %zu trades.\n"
+            "  The drift correction subtracts the SAMPLE-mean forward return,\n"
+            "  so on a prefix it removes that prefix's mean and leaves any\n"
+            "  local trend standing. Measured on a full BTCUSDT day, the\n"
+            "  aggressor side scores AUC 0.5012 against the label; over the\n"
+            "  first 200k trades 0.5897; over the first 20k, 0.6979 -- enough\n"
+            "  leakage to fail this audit. Audit the FULL session before\n"
+            "  trusting a verdict.\n", opts.max_rows);
+    }
+
     if (events.empty()) {
         std::fprintf(stderr, "\nERROR: no labelled events\n");
         return 1;

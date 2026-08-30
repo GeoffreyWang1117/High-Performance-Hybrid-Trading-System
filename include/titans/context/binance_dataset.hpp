@@ -162,7 +162,7 @@ public:
                 return false;
             }
             trades_.push_back(t);
-            if (max_rows && trades_.size() >= max_rows) break;
+            if (max_rows && trades_.size() >= max_rows) { truncated_ = true; break; }
         }
 
         if (trades_.empty()) {
@@ -257,6 +257,19 @@ public:
     }
 
     const DatasetStats& stats() const { return stats_; }
+
+    /**
+     * @brief True when load() stopped early because of max_rows.
+     *
+     * Matters for correctness, not just bookkeeping: drift_adjust subtracts the
+     * SAMPLE-MEAN forward return, so on a truncated prefix it removes the
+     * prefix's mean rather than the session's and leaves any local trend
+     * standing. Measured on BTCUSDT 2024-01-15: over the full day the aggressor
+     * side scores AUC 0.5012 against the label (chance), over the first 200k
+     * trades 0.5897, and over the first 20k trades 0.6979 -- leakage bad enough
+     * that the audit rejects the dataset.
+     */
+    bool truncated() const { return truncated_; }
     const std::string& error() const { return error_; }
     const std::string& source_path() const { return source_path_; }
     const std::vector<AggTrade>& trades() const { return trades_; }
@@ -326,6 +339,7 @@ private:
     }
 
     ToxicFlowLabelConfig config_;
+    bool truncated_ = false;
     std::vector<AggTrade> trades_;
     DatasetStats stats_;
     std::string error_;

@@ -203,27 +203,40 @@ python python/data/fetch_binance.py --symbol BTCUSDT --date 2024-01-15
 ```
 
 ```
-  trades:        200000
-  labelled:      199922
-  toxic:         2293 (1.15% of labelled)
-  session drift: +0.094 bps per horizon (removed from the label)
+  trades:        1364603
+  labelled:      1364527
+  toxic:         21769 (1.60% of labelled)
+  session drift: -0.154 bps per horizon (removed from the label)
 
 LEAKAGE AUDIT (AUC; 0.5 = chance)
   event-only features -- these must stay near chance:
-    trade quantity          0.5566   (|dev| 0.0566)
-    trade price             0.5709   (|dev| 0.0709)
-    aggressor side          0.5897   (|dev| 0.0897)
+    trade quantity          0.5383   (|dev| 0.0383)
+    trade price             0.5735   (|dev| 0.0735)
+    aggressor side          0.5012   (|dev| 0.0012)
   context feature -- this must beat chance:
-    signed flow, last 50    0.7631   (|dev| 0.2631)
+    signed flow, last 50    0.7072   (|dev| 0.2072)
+
+  [pass] No single event field clears the leakage limit
+  [pass] Trailing signed order flow predicts the label above chance
 ```
 
-The audit earned its place immediately: before drift adjustment, aggressor side
-alone scored AUC 0.604 against the label, because BTCUSDT rose from 41 718 to
-42 769 that day and aggressive buys were followed by favourable moves for
-reasons that had nothing to do with informed flow. Subtracting the session's
-mean forward return centres both sides. The tool still reports the residual as
-`[near]` rather than an unqualified pass, because 0.0897 clears the 0.10 limit
-by little.
+The audit earned its place immediately. Before drift adjustment the aggressor
+side alone scored AUC 0.604 against the label, because BTCUSDT trended that day
+and aggressive buys were followed by favourable moves for reasons that had
+nothing to do with informed flow. Subtracting the session's mean forward return
+brings it to 0.5012 — chance.
+
+It also has to run on the **whole** session. The correction is a sample-mean
+statistic, so on a truncated prefix it removes the prefix's mean and leaves the
+local trend standing. Same file, same settings, different amounts of it:
+
+| Trades audited | Aggressor-side AUC | Verdict |
+|---|---|---|
+| First 20 000 | 0.6979 | rejected — leakage |
+| First 200 000 | 0.5897 | passes, flagged `[near]` |
+| All 1 364 603 | **0.5012** | clean pass |
+
+`--max-rows` therefore prints a warning saying exactly this.
 
 ---
 
