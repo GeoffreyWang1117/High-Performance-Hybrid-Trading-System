@@ -72,18 +72,45 @@ Systematically injects 6 contamination types:
 - **MitigationEffectivenessMetrics**: Improvement, detection/prevention rates
 
 ### 4. Experiment Harness (`experiment_harness.hpp`)
-- **SyntheticDataGenerator**: Reproducible event streams
-- **ModelSimulator**: Controlled inference experiments
+- **SyntheticDataGenerator**: Reproducible event streams whose labels are NOT
+  recoverable from the event (guarded by `tests/test_task_design.cpp`)
+- **AssumedDegradationModel**: a stand-in whose response to contamination is
+  ASSUMED, not measured. Formerly named `ModelSimulator`, which read like a
+  model. See "What the stand-in can and cannot support" below.
 - **BaselineContextManager**: 5 baseline method implementations
 - **ExperimentRunner**: Automated comparison pipeline
 - **AblationRunner**: Component-wise ablation studies
 
 ### 5. LLM Interface (`llm_interface.hpp`)
 - **LLMBackend**: Abstract interface for LLM providers
-- **OllamaBackend**: Local Ollama integration
-- **VLLMBackend**: High-throughput local inference
+- **OllamaBackendImpl** / **VLLMBackendImpl** (`ollama_backend.hpp`): the real
+  HTTP clients. Stub classes named `OllamaBackend` and `VLLMBackend` used to sit
+  in `llm_interface.hpp` returning a fixed `{"classification": "normal"}` with
+  `success = true`; they were deleted rather than fixed, because two classes
+  with one responsibility and one silently fake is a trap.
+- **LLMBackendFactory**: health-checks a real endpoint before returning a
+  backend
 - **PromptBuilder**: Task-specific prompt templates
 - **LLMExperimentRunner**: Real LLM experiment orchestration
+
+### 5b. Context Contamination (`context_contaminator.hpp`)
+- **ContextContaminator**: mutates the context that is serialized into the
+  prompt. Before this existed, the LLM experiment constructed a
+  `ContaminationInjector`, never called it, and attached the contamination
+  vector to the output as metadata -- the independent variable was never
+  applied to the model's input.
+- Each contamination type must be MISLEADING IF TRUSTED but DETECTABLE IN
+  PRINCIPLE; an undetectable one would flatten every strategy comparison just as
+  surely as no contamination at all.
+
+### 5c. Real Market Data (`binance_dataset.hpp`)
+- **BinanceToxicFlowDataset**: Binance aggTrades labelled by forward adverse
+  selection -- toxic if the price moves `threshold_bps` in the aggressor's
+  favour within `horizon_ms`. The label comes from the future, so no field of
+  the event can encode it.
+- **`titans_dataset`**: labels a file and audits it for leakage, exiting
+  non-zero if any single event field predicts the label or if context features
+  do not.
 
 ### 6. Data Adapters (`data_adapters.hpp`)
 - **LOBSTERAdapter**: Nasdaq L3 order book data
@@ -124,35 +151,53 @@ runner.print_comparison(results);
 ```cpp
 #include "titans/context/llm_interface.hpp"
 
-auto ollama = std::make_shared<OllamaBackend>(OllamaConfig{
-    .host = "localhost",
-    .port = 11434,
-    .default_model = "llama3.1:8b"
-});
+OllamaConfig cfg;
+cfg.host = "localhost";
+cfg.port = 11434;
+cfg.default_model = "llama3.1:8b";
 
-LLMExperimentConfig config;
-config.experiment_id = "llama3_versioned";
-config.model_name = "llama3.1:8b";
-config.backend = ollama;
-config.context_method = ContextMethod::VersionedContext;
-config.num_events = 500;
+auto backend = LLMBackendFactory::create_ollama(cfg);
+if (!backend->is_available()) {
+    // Do NOT substitute a stand-in here. A number produced without querying a
+    // model is not evidence about a model.
+    return 1;
+}
+```
 
-LLMExperimentRunner runner;
-auto result = runner.run(config);
-result.print_summary();
+In practice, drive it from the command line, which runs both arms of the paired
+design and writes every raw response to the results file:
+
+```bash
+./build/titans_llm_experiment --backend vllm --port 8000 \
+    --model Qwen/Qwen2.5-7B-Instruct --events 1000 --seed 42 --out results/llm
 ```
 
 ### Generate Paper Figures
 ```bash
-cd python/research
-python generate_figures.py
+python python/research/generate_figures.py --results results
 ```
+Fails with exit 2 when the results directory is empty. There is deliberately no
+synthetic fallback; the previous version drew `np.random` data around
+hand-picked accuracies and rendered publication-ready figures from it.
 
-## Known Limitations of the Simulator
+## What the stand-in can and cannot support
 
-Honest caveats to carry into the paper:
+`AssumedDegradationModel` computes accuracy as a product of hardcoded
+multipliers -- 0.5 for an entity-binding error, 0.7 for stale state, and so on
+-- followed by one Bernoulli draw. The constants were chosen, not observed.
 
-1. **NoHistory is a strong baseline by construction.** The `ModelSimulator`
+**It cannot answer "which contamination type hurts a language model most",**
+because the ranking it produces is exactly the ranking of those constants.
+Quoting it for that purpose is circular: the conclusion was typed into the
+switch statement. `titans_experiment` prints this in its own output.
+
+It IS useful for exercising the pipeline end to end without an inference server,
+for checking that injection, mitigation, and metrics respond in the expected
+direction, and for regression-testing refactors.
+
+Further caveats:
+
+1. **NoHistory is a strong baseline by construction.** The stand-in
    gives context no upward benefit — it only carries contamination risk — so a
    method that discards everything scores well on clean accuracy. With real
    LLMs, context improves clean-task accuracy, which is exactly what the
@@ -164,8 +209,13 @@ Honest caveats to carry into the paper:
    passage; only provenance-tagged state is checkable. This is an intentional
    scope boundary, not an oversight.
 3. **Residual degradation constants** (0.995 per stale context item, floor at
-   300 items) are simulator parameters. Sensitivity to them should be reported
-   in an appendix; the method *ranking* is what the simulation establishes.
+   300 items) are stand-in parameters, not measurements.
+
+4. **An ablation that changes nothing is reported as INERT, not as a null
+   result.** `AblationRunner::run_ablation_study_checked()` flags any
+   configuration whose metrics are identical to the full system and states why
+   the disabled component never executed. An identical row means the experiment
+   cannot tell whether the component matters -- not that it does not.
 
 ## Experiment Checklist
 
@@ -222,25 +272,35 @@ figures/
 ### Recommended (Local LLM Experiments)
 - CPU: 16 cores
 - RAM: 64GB
-- GPU: NVIDIA RTX 4090 / A100 (24GB+ VRAM)
+- GPU: 24GB+ VRAM for a 7-8B model at bf16
 - Storage: 100GB SSD
 
-### Models Tested
-| Model | VRAM Required | Recommended Backend |
-|-------|---------------|---------------------|
-| Llama 3.1 8B | 8GB | Ollama |
-| Llama 3.1 70B | 40GB | vLLM |
-| Qwen 2.5 32B | 20GB | vLLM |
-| Mistral 7B | 6GB | Ollama |
+No GPU available? `python/serving/cpu_shim.py` serves the same
+OpenAI-compatible protocol on CPU. It is not a vLLM replacement -- no batching,
+one request at a time, single-digit tokens/sec -- but it keeps the experiment
+path exercisable in CI and on a workstation whose GPUs are committed elsewhere.
+
+### Model compatibility
+Any backend speaking the Ollama or OpenAI chat protocol. The table below lists
+what the code supports, NOT what has been run; consult `results/` for the
+models actually exercised, since each results file records its backend and
+model.
+
+| Size | Approx. VRAM (bf16) | Backend |
+|------|---------------------|---------|
+| 1.5B | 3GB  | any, or the CPU shim |
+| 3B   | 6GB  | Ollama / vLLM |
+| 7-8B | 16GB | vLLM |
+| 32B  | 64GB, or ~20GB quantized | vLLM |
 
 ## Citation
 
 ```bibtex
-@inproceedings{titans2026contamination,
-  title={Reliable Event-Driven LLM Analytics: A Framework for 
-         Detecting and Mitigating Context Contamination},
-  author={...},
-  booktitle={Proceedings of ...},
-  year={2026}
+@misc{titans_contamination,
+  title  = {Titans: Context Contamination in Event-Driven LLM Analytics},
+  note   = {Software framework. No results in this repository have been
+            published; figures come only from measured runs recorded under
+            results/.},
+  year   = {2026}
 }
 ```

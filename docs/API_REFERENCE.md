@@ -407,7 +407,30 @@ struct ExperimentConfig {
     size_t num_rounds = 100;
     bool collect_detailed_traces = false;
 
+    // Which parts of the reliability layer are active. Each flag gates a
+    // distinct code path; see AblationRunner below.
+    AblationFlags ablation;
+
+    // Temporal validity window for versioned context managers. Must be well
+    // inside num_events * event_interval_ns, or the temporal filter never
+    // fires and ablating it changes nothing.
+    Duration context_max_age_ns = 2000000000LL;
+
     uint64_t seed = 42;
+};
+```
+
+#### AblationFlags
+
+```cpp
+struct AblationFlags {
+    bool use_temporal_validity = true;      // drop context past max_age
+    bool use_provenance_tracking = true;    // trust version/provenance metadata
+    bool use_selective_forgetting = true;   // keep only latest per entity
+    bool use_conflict_detection = true;     // detect inconsistent valid states
+    bool use_cross_agent_validation = true; // quarantine other agents' claims
+
+    bool all_enabled() const;
 };
 ```
 
@@ -447,6 +470,13 @@ public:
 #### AblationRunner
 
 ```cpp
+struct AblationOutcome {
+    ExperimentResult result;
+    std::string name;
+    bool inert = false;          // metrics identical to the full system
+    std::string inert_reason;    // why the disabled component never executed
+};
+
 class AblationRunner {
 public:
     std::vector<ExperimentResult> run_ablation_study(
@@ -454,6 +484,19 @@ public:
         const std::vector<AblationConfig>& ablations
     );
 
+    // Prefer this. Marks ablations that changed nothing, which means the
+    // disabled component was never reached under this configuration. Such a
+    // row does NOT show that the component is unimportant; it shows that the
+    // experiment cannot tell, and reporting it as a number invites the wrong
+    // reading.
+    std::vector<AblationOutcome> run_ablation_study_checked(
+        const ExperimentConfig& base_config,
+        const std::vector<AblationConfig>& ablations
+    );
+
+    static bool identical(const ExperimentResult& a, const ExperimentResult& b);
+    static std::string inert_reason_for(const std::string& name,
+                                        const ExperimentConfig& cfg);
     static std::vector<AblationConfig> standard_ablations();
 };
 ```
@@ -876,4 +919,208 @@ int main() {
 
     return 0;
 }
+```
+
+---
+
+## 10. Fast/Slow Lane Boundary
+
+### `titans/lanes/advisory.hpp`
+
+The only channel from slow-lane (model) output to the fast path.
+
+```cpp
+enum class AdvisoryStance : uint8_t { None, RiskOff, Neutral, RiskOn, Halt };
+
+struct Advisory {
+    AdvisoryStance stance = AdvisoryStance::None;
+    float confidence = 0.0f;
+    float size_multiplier = 1.0f;
+    Timestamp issued_at = 0;
+    Timestamp valid_until = 0;        // time expiry
+    uint64_t context_generation = 0;  // context expiry
+    char source[32] = {};
+
+    // Both expiry conditions must hold. context_generation catches an advisory
+    // that is still inside its time window but was reasoned from facts the fast
+    // lane has since invalidated.
+    bool is_valid_at(Timestamp now, uint64_t current_generation) const;
+};
+
+class AdvisorySlot {                  // single writer, multiple readers
+public:
+    static constexpr uint64_t kRing = 16;
+    static constexpr int kMaxReadRetries = 4;
+
+    void publish(const Advisory& a);  // wait-free; never blocks on a reader
+    bool try_read(Advisory& out) const;  // bounded; false means "keep cached"
+    uint64_t publishes() const;
+    uint64_t read_retry_exhausted() const;
+};
+
+class AdvisoryView {                  // the fast lane's cached read side
+public:
+    explicit AdvisoryView(const AdvisorySlot& slot,
+                          AdvisoryStance fallback = AdvisoryStance::Neutral);
+    Advisory current(Timestamp now, uint64_t current_generation);
+    uint64_t stale_reads() const;
+    uint64_t rejected() const;
+};
+```
+
+### `titans/lanes/lane_bridge.hpp`
+
+```cpp
+template <size_t Capacity = 1024>
+class LaneBridge {
+public:
+    bool offer(const LaneObservation& obs);  // fast lane; DROPS when full
+    bool poll(LaneObservation& out);         // slow lane
+    uint64_t offered() const;
+    uint64_t dropped() const;
+    uint64_t consumed() const;
+    double drop_rate() const;   // expected to be high; that is sampling
+};
+```
+
+### `titans/lanes/latency_budget.hpp`
+
+```cpp
+class LatencyBudget {
+public:
+    LatencyBudget(std::string stage_name, uint64_t budget_ns);
+    void record_ns(uint64_t observed_ns);
+    bool passed() const;             // zero violations, not "good on average"
+    uint64_t violations() const;
+    double violation_rate() const;
+};
+
+class BudgetScope {   // RAII; costs two rdtsc reads, so guard stages not primitives
+public:
+    BudgetScope(LatencyBudget& budget, double ticks_per_ns);
+};
+```
+
+---
+
+## 11. Measurement
+
+### `titans/bench/cycle_timer.hpp`
+
+```cpp
+uint64_t rdtsc_start();   // lfence; rdtsc; lfence
+uint64_t rdtsc_end();     // rdtscp; lfence
+
+template <typename T> void do_not_optimize(T const& value);
+void clobber_memory();
+
+class TscClock {
+public:
+    explicit TscClock(int calibration_ms = 200);
+    double ticks_per_ns() const;
+    double to_ns(uint64_t ticks) const;
+    double noise_floor_ns() const;      // cost of an empty rdtsc pair
+    double noise_floor_p99_ns() const;
+    bool is_resolvable(double ns) const;  // must clear 3x the floor
+    std::string describe() const;
+};
+```
+
+### `titans/bench/harness.hpp`
+
+```cpp
+enum class MeasurementMode { Amortized, PerOp };
+
+class Harness {
+public:
+    explicit Harness(size_t pin_core_index = 4, int calibration_ms = 200);
+
+    // The only valid mode below the noise floor. Produces no distribution,
+    // and BenchmarkResult::has_distribution stays false to say so.
+    template <typename Op, typename Setup>
+    BenchmarkResult measure_amortized(const std::string& name,
+                                      uint64_t batch_size, int reps,
+                                      Op&& op, Setup&& setup);
+
+    // Auto-demotes to Amortized and annotates the name when the measured cost
+    // fails the resolvability gate.
+    template <typename Op, typename Setup>
+    BenchmarkResult measure_per_op(const std::string& name,
+                                   uint64_t iterations, int reps,
+                                   Op&& op, Setup&& setup);
+};
+```
+
+### `titans/bench/platform.hpp`
+
+```cpp
+bool pin_to_cpu(int cpu);
+
+struct MachineFingerprint {
+    static MachineFingerprint capture();
+    // Error sources NOT controlled on this host. Serialized into every
+    // results file, because a latency number without them cannot be weighed.
+    std::vector<std::string> caveats() const;
+    std::string to_json(int indent = 2) const;
+};
+```
+
+---
+
+## 12. Real Market Data
+
+### `titans/context/binance_dataset.hpp`
+
+```cpp
+struct ToxicFlowLabelConfig {
+    int64_t horizon_ms = 1000;
+    double threshold_bps = 5.0;
+    int64_t entity_bucket_ms = 0;
+    bool drift_adjust = true;   // remove session drift; see below
+};
+
+class BinanceToxicFlowDataset {
+public:
+    explicit BinanceToxicFlowDataset(ToxicFlowLabelConfig config = {});
+    bool load(const std::string& path, size_t max_rows = 0);
+    std::vector<SyntheticEvent> build_events();
+    const DatasetStats& stats() const;
+};
+```
+
+A trade is toxic when the price moves at least `threshold_bps` in the
+aggressor's favour within `horizon_ms`. The label comes from the future, so no
+field of the event encodes it.
+
+`drift_adjust` subtracts the session's mean forward return. Without it the label
+inherits the session's direction: on a trending day, aggressive buys are
+followed by favourable moves regardless of whether the flow was informed, and
+the aggressor side alone predicts the label. Verified in
+`tests/test_binance_dataset.cpp` -- on a pure uptrend, uncorrected labelling
+gives 195 toxic buys and 0 toxic sells; corrected gives 0 and 0.
+
+### `titans/context/context_contaminator.hpp`
+
+```cpp
+struct AppliedContamination {
+    ContaminationType type;
+    std::string target_entity;
+    std::string description;
+    int context_index = -1;
+    bool skipped = false;      // could not be applied; NOT a treated trial
+    std::string skip_reason;
+};
+
+class ContextContaminator {
+public:
+    explicit ContextContaminator(uint64_t seed = 42);
+
+    // Mutates the context that is serialized into the prompt. The event under
+    // review is never modified, so accuracy changes are attributable to what
+    // surrounded it.
+    ContaminatedContext apply(const SyntheticEvent& current_event,
+                              const std::vector<SyntheticEvent>& context,
+                              const std::vector<SyntheticEvent>& full_history,
+                              const std::vector<ContaminationType>& types);
+};
 ```
