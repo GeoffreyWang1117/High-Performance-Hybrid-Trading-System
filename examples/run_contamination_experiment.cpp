@@ -7,6 +7,7 @@
 
 #include "titans/context/experiment_harness.hpp"
 #include <iostream>
+#include <string>
 
 using namespace titans::context;
 
@@ -21,6 +22,9 @@ int main() {
     // ========================================================================
     // Experiment 1: Baseline Method Comparison
     // ========================================================================
+    std::cout << "\n";
+    std::cout << "MODE: assumed-degradation stand-in (no model is queried).\n";
+    std::cout << "      Use titans_llm_experiment for claims about real models.\n";
     std::cout << "\n[1/3] Running Baseline Method Comparison...\n" << std::endl;
 
     ExperimentConfig base_config;
@@ -87,26 +91,41 @@ int main() {
     // ========================================================================
     std::cout << "\n[3/3] Running Ablation Study...\n" << std::endl;
 
+    // Ablations run against the strongest method, so that the conflict- and
+    // cross-agent checks -- which only execute under FullVersionedIntegrity --
+    // are actually on the code path being ablated.
+    ExperimentConfig ablation_base = base_config;
+    ablation_base.method = ContextMethod::FullVersionedIntegrity;
+
     AblationRunner ablation_runner;
     auto ablations = AblationRunner::standard_ablations();
-    auto ablation_results = ablation_runner.run_ablation_study(base_config, ablations);
+    auto outcomes = ablation_runner.run_ablation_study_checked(ablation_base, ablations);
 
-    printf("\n╔════════════════════════════════════════════════════════════════╗\n");
-    printf("║           ABLATION STUDY RESULTS                               ║\n");
-    printf("╠════════════════════════════════════════════════════════════════╣\n");
-    printf("║ Configuration        │ Accuracy │ Δ Clean │ Stale Ref │ FPR    ║\n");
-    printf("╠══════════════════════╪══════════╪═════════╪═══════════╪════════╣\n");
+    printf("\n%-18s %10s %9s %11s %9s   %s\n",
+           "Configuration", "Accuracy", "d Clean", "Stale Ref", "FPR", "status");
+    printf("%s\n", std::string(88, '-').c_str());
 
-    for (const auto& r : ablation_results) {
-        printf("║ %-20s │ %7.2f%% │ %6.2f%% │ %8.2f%% │ %5.2f%% ║\n",
-               r.method_name.c_str(),
-               r.impact_metrics.accuracy * 100,
-               r.impact_metrics.accuracy_delta * 100,
-               r.impact_metrics.stale_reference_rate * 100,
-               r.impact_metrics.false_positive_rate * 100);
+    int inert_count = 0;
+    for (const auto& o : outcomes) {
+        printf("%-18s %9.2f%% %8.2f%% %10.2f%% %8.2f%%   %s\n",
+               o.name.c_str(),
+               o.result.impact_metrics.accuracy * 100,
+               o.result.impact_metrics.accuracy_delta * 100,
+               o.result.impact_metrics.stale_reference_rate * 100,
+               o.result.impact_metrics.false_positive_rate * 100,
+               o.inert ? "INERT" : "");
+        if (o.inert) ++inert_count;
     }
 
-    printf("╚════════════════════════════════════════════════════════════════╝\n");
+    if (inert_count > 0) {
+        printf("\n%d of %zu ablations were INERT -- identical to the full system,\n",
+               inert_count, outcomes.size());
+        printf("meaning the disabled component never executed. These rows say\n");
+        printf("nothing about whether the component matters:\n");
+        for (const auto& o : outcomes) {
+            if (o.inert) printf("  - %-16s %s\n", o.name.c_str(), o.inert_reason.c_str());
+        }
+    }
 
     // ========================================================================
     // Summary Statistics
@@ -130,14 +149,38 @@ int main() {
         }
     }
 
-    printf("\nBest Method: %s (%.2f%% accuracy)\n", best_method.c_str(), best_accuracy * 100);
-    printf("Worst Method: %s (%.2f%% accuracy)\n", worst_method.c_str(), worst_accuracy * 100);
-    printf("Improvement: +%.2f%% absolute, %.1fx relative\n",
+    printf("\nHighest scoring method: %s (%.2f%%)\n",
+           best_method.c_str(), best_accuracy * 100);
+    printf("Lowest scoring method:  %s (%.2f%%)\n",
+           worst_method.c_str(), worst_accuracy * 100);
+    printf("Spread: %.2f points absolute, %.1fx relative\n",
            (best_accuracy - worst_accuracy) * 100,
            best_accuracy / worst_accuracy);
 
-    std::cout << "\n✓ All experiments completed successfully." << std::endl;
-    std::cout << "Results can be used for paper Tables 1-3." << std::endl;
+    printf("\n");
+    printf("================================================================\n");
+    printf(" WHAT THESE NUMBERS ARE\n");
+    printf("================================================================\n");
+    printf(
+        "Every accuracy above was produced by AssumedDegradationModel, whose\n"
+        "response to contamination is a product of hardcoded multipliers\n"
+        "(0.5 for entity binding, 0.7 for stale state, ...) followed by one\n"
+        "Bernoulli draw. No model was queried.\n"
+        "\n"
+        "So these numbers CAN support:\n"
+        "  - that injection, mitigation, and metrics are wired together;\n"
+        "  - that context strategies differ in how much contaminated material\n"
+        "    they retain, which is a property of the strategies themselves;\n"
+        "  - regression detection across refactors.\n"
+        "\n"
+        "They CANNOT support any claim about how a language model behaves\n"
+        "under contamination. The ranking of contamination types here is the\n"
+        "ranking of the constants in experiment_harness.hpp -- reading it as a\n"
+        "finding is circular.\n"
+        "\n"
+        "For claims about real models, run:  titans_llm_experiment\n"
+        "which queries a live backend and records the model, prompt, and raw\n"
+        "responses alongside the metrics.\n");
 
     return 0;
 }
