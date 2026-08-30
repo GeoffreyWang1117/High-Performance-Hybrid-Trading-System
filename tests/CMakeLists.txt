@@ -18,6 +18,7 @@ if(GTest_FOUND)
         test_json.cpp
         test_lane_isolation.cpp
         test_task_design.cpp
+        test_statistics.cpp
     )
 
     target_link_libraries(titans_tests
@@ -45,6 +46,7 @@ else()
         test_json.cpp
         test_lane_isolation.cpp
         test_task_design.cpp
+        test_statistics.cpp
     )
 
     target_link_libraries(titans_tests

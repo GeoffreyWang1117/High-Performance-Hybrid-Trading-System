@@ -134,6 +134,12 @@ add_executable(titans_replay
 )
 target_link_libraries(titans_replay PRIVATE titans_market_data titans_trading)
 
+# Dataset labelling and leakage audit
+add_executable(titans_dataset
+    src/tools/dataset_main.cpp
+)
+target_link_libraries(titans_dataset PRIVATE titans_core)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark

@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include <cmath>
+#include <limits>
+
 #include "evaluation_metrics.hpp"
 #include "llm_interface.hpp"
 #include <fstream>
@@ -177,6 +180,74 @@ public:
         std::string interpretation;
     };
 
+    /**
+     * @brief Regularized incomplete beta function I_x(a, b).
+     *
+     * Continued-fraction evaluation (Lentz's method), the standard route to
+     * exact Student-t tail probabilities without pulling in a stats library.
+     * Converges in well under 200 iterations for the range used here.
+     */
+    static double incomplete_beta(double a, double b, double x) {
+        if (x <= 0.0) return 0.0;
+        if (x >= 1.0) return 1.0;
+
+        const double lbeta = std::lgamma(a + b) - std::lgamma(a) - std::lgamma(b);
+        const double front = std::exp(lbeta + a * std::log(x) + b * std::log1p(-x));
+
+        // Reflect when x is past the distribution's centre of mass; the
+        // continued fraction converges slowly on the far side.
+        if (x > (a + 1.0) / (a + b + 2.0)) {
+            return 1.0 - incomplete_beta(b, a, 1.0 - x);
+        }
+
+        constexpr double kTiny = 1e-30;
+        double f = 1.0, c = 1.0, d = 0.0;
+
+        for (int i = 0; i <= 300; ++i) {
+            const int m = i / 2;
+            double numerator;
+            if (i == 0) {
+                numerator = 1.0;
+            } else if (i % 2 == 0) {
+                numerator = (m * (b - m) * x) /
+                            ((a + 2.0 * m - 1.0) * (a + 2.0 * m));
+            } else {
+                numerator = -((a + m) * (a + b + m) * x) /
+                             ((a + 2.0 * m) * (a + 2.0 * m + 1.0));
+            }
+
+            d = 1.0 + numerator * d;
+            if (std::abs(d) < kTiny) d = kTiny;
+            d = 1.0 / d;
+
+            c = 1.0 + numerator / c;
+            if (std::abs(c) < kTiny) c = kTiny;
+
+            const double cd = c * d;
+            f *= cd;
+
+            if (std::abs(1.0 - cd) < 1e-12) break;
+        }
+        return front * (f - 1.0) / a;
+    }
+
+    /**
+     * @brief Two-sided p-value for Student's t with @p df degrees of freedom.
+     * @param t   Absolute t statistic.
+     * @param df  Degrees of freedom; must be >= 1.
+     */
+    static double student_t_two_sided_p(double t, double df) {
+        if (df <= 0.0) return 1.0;
+        // NaN means the statistic is undefined (typically 0/0 from a sample
+        // with no variance). Report NO evidence, p=1. Returning 0 here would
+        // dress an undefined statistic up as maximal significance, which is
+        // the dangerous direction to fail in.
+        if (std::isnan(t)) return 1.0;
+        if (std::isinf(t)) return 0.0;
+        const double x = df / (df + t * t);
+        return incomplete_beta(0.5 * df, 0.5, x);
+    }
+
     static PairedTestResult paired_t_test(
         const std::vector<double>& baseline,
         const std::vector<double>& treatment
@@ -185,6 +256,16 @@ public:
 
         if (baseline.size() != treatment.size() || baseline.empty()) {
             result.interpretation = "Invalid input: mismatched or empty samples";
+            result.p_value = 1.0;
+            return result;
+        }
+        if (baseline.size() < 2) {
+            // A paired t-test needs at least two pairs to estimate the spread
+            // of the differences. With one pair there is nothing to divide by.
+            result.mean_diff = treatment[0] - baseline[0];
+            result.p_value = 1.0;
+            result.interpretation =
+                "Not testable: a single pair has no variance to estimate";
             return result;
         }
 
@@ -205,12 +286,46 @@ public:
         }
         result.std_diff = std::sqrt(sum_sq / (n - 1));
 
-        // T-statistic
-        double se = result.std_diff / std::sqrt(static_cast<double>(n));
+        // T-statistic. Guard the degenerate case where every pair differs by
+        // exactly the same amount (std_diff == 0): the naive division is 0/0
+        // for identical arms, and x/0 otherwise.
+        const double se = result.std_diff / std::sqrt(static_cast<double>(n));
+        if (se == 0.0) {
+            if (result.mean_diff == 0.0) {
+                // The two arms are identical. There is no effect and no
+                // evidence of one.
+                result.t_statistic = 0.0;
+                result.p_value = 1.0;
+                result.significant_at_05 = false;
+                result.significant_at_01 = false;
+                result.interpretation = "No difference: samples are identical";
+                return result;
+            }
+            // A perfectly constant non-zero difference across every pair. Real
+            // measurements do not behave this way; it almost always means the
+            // two arms were produced by the same deterministic path with a
+            // fixed offset, so flag it instead of reporting p=0.
+            result.t_statistic = std::numeric_limits<double>::infinity();
+            result.p_value = 0.0;
+            result.significant_at_05 = true;
+            result.significant_at_01 = true;
+            result.interpretation =
+                "Degenerate: every pair differs by exactly the same amount; "
+                "check whether the arms are genuinely independent";
+            return result;
+        }
         result.t_statistic = result.mean_diff / se;
 
-        // Approximate p-value (using normal approximation for large n)
-        result.p_value = 2.0 * (1.0 - normal_cdf(std::abs(result.t_statistic)));
+        // Two-sided p-value from Student's t with n-1 degrees of freedom.
+        //
+        // This used to use a normal approximation. That is only defensible for
+        // large n, and these experiments run 3-10 seeds: at n=5 (df=4) the
+        // normal tail understates p by roughly a third -- t=2.78 is p=0.0054
+        // under a normal and p=0.0498 under t(4). Reporting the former as
+        // "highly significant (p < 0.01)" for a result that barely clears 0.05
+        // is exactly the kind of overstatement this framework should not make.
+        result.p_value = student_t_two_sided_p(std::abs(result.t_statistic),
+                                               static_cast<double>(n - 1));
 
         result.significant_at_05 = result.p_value < 0.05;
         result.significant_at_01 = result.p_value < 0.01;

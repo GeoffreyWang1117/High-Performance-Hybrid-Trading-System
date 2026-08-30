@@ -112,61 +112,15 @@ struct OllamaConfig {
     bool keep_alive = true;
 };
 
-class OllamaBackend : public LLMBackend {
-public:
-    explicit OllamaBackend(const OllamaConfig& config = {})
-        : config_(config) {}
-
-    std::string name() const override { return "Ollama"; }
-
-    bool is_available() const override {
-        // TODO: HTTP health check to config_.host:config_.port/api/tags
-        return true;
-    }
-
-    std::vector<std::string> available_models() const override {
-        // TODO: GET /api/tags and parse model list
-        return {config_.default_model, "llama3.1:70b", "qwen2.5:32b", "mistral:7b"};
-    }
-
-    LLMResponse complete(const LLMRequest& request) override {
-        auto start = std::chrono::high_resolution_clock::now();
-
-        LLMResponse response;
-        response.request_id = request.request_id;
-        response.model = request.model.empty() ? config_.default_model : request.model;
-
-        // TODO: Actual HTTP POST to /api/chat
-        // For now, return placeholder for framework testing
-        response.content = R"({"classification": "normal", "confidence": 0.85, "reasoning": "No anomaly detected"})";
-        response.success = true;
-        response.prompt_tokens = estimate_tokens(request);
-        response.completion_tokens = 50;
-        response.total_tokens = response.prompt_tokens + response.completion_tokens;
-
-        auto end = std::chrono::high_resolution_clock::now();
-        response.latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
-
-        return response;
-    }
-
-    std::future<LLMResponse> complete_async(const LLMRequest& request) override {
-        return std::async(std::launch::async, [this, request]() {
-            return complete(request);
-        });
-    }
-
-private:
-    int estimate_tokens(const LLMRequest& request) const {
-        int total = 0;
-        for (const auto& msg : request.messages) {
-            total += static_cast<int>(msg.content.length() / 4);  // ~4 chars per token
-        }
-        return total;
-    }
-
-    OllamaConfig config_;
-};
+// The concrete Ollama backend lives in ollama_backend.hpp (OllamaBackendImpl).
+//
+// A stub with this name used to sit here: complete() ignored the request and
+// returned a fixed {"classification": "normal", ...} while reporting
+// success = true, and is_available() returned true without contacting
+// anything. Any experiment that picked it up produced clean-looking numbers
+// from a model that was never queried. Removed rather than fixed -- two
+// classes with the same responsibility and one silently fake is a trap, and
+// LLMBackendFactory::auto_detect() health-checks a real endpoint instead.
 
 // ============================================================================
 // vLLM Backend (High-throughput Local Inference)
@@ -179,50 +133,8 @@ struct VLLMConfig {
     int timeout_ms = 60000;
 };
 
-class VLLMBackend : public LLMBackend {
-public:
-    explicit VLLMBackend(const VLLMConfig& config = {})
-        : config_(config) {}
-
-    std::string name() const override { return "vLLM"; }
-
-    bool is_available() const override {
-        // TODO: Health check
-        return true;
-    }
-
-    std::vector<std::string> available_models() const override {
-        // TODO: GET /v1/models
-        return {"meta-llama/Llama-3.1-8B-Instruct"};
-    }
-
-    LLMResponse complete(const LLMRequest& request) override {
-        // TODO: OpenAI-compatible /v1/chat/completions
-        LLMResponse response;
-        response.request_id = request.request_id;
-        response.success = true;
-        response.content = "{}";
-        return response;
-    }
-
-    std::future<LLMResponse> complete_async(const LLMRequest& request) override {
-        return std::async(std::launch::async, [this, request]() {
-            return complete(request);
-        });
-    }
-
-    // vLLM supports efficient batching
-    std::vector<LLMResponse> complete_batch(
-        const std::vector<LLMRequest>& requests,
-        int max_concurrent
-    ) override {
-        // TODO: Use vLLM's batch endpoint for efficiency
-        return LLMBackend::complete_batch(requests, max_concurrent);
-    }
-
-private:
-    VLLMConfig config_;
-};
+// The concrete vLLM backend lives in ollama_backend.hpp (VLLMBackendImpl).
+// A stub with this name used to sit here and returned "{}" for every request.
 
 // ============================================================================
 // Prompt Templates for Anomaly Detection Task

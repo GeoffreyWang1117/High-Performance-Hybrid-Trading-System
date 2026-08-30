@@ -71,3 +71,10 @@ perf.data*
 tmp/
 temp/
 *.tmp
+
+# Downloaded market data: large, and reproducible from the manifest.
+# The .manifest files ARE tracked -- they record source URL, SHA256, and row
+# count, which is what makes a run reproducible without shipping 100 MB CSVs.
+data/raw/*.csv
+data/raw/*.zip
+!data/raw/*.manifest

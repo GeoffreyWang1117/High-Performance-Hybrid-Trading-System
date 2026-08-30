@@ -6,6 +6,9 @@ This script reads experiment results and generates publication-ready
 figures for the research paper.
 """
 
+import argparse
+import sys
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -48,72 +51,50 @@ OUTPUT_DIR = Path('figures')
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-def load_results(results_dir: str = 'experiments') -> pd.DataFrame:
-    """Load all experiment results into a DataFrame."""
+class NoResultsError(RuntimeError):
+    """Raised when there is nothing measured to plot."""
+
+
+def load_results(results_dir: str = 'results') -> pd.DataFrame:
+    """Load measured experiment results.
+
+    Raises NoResultsError when the directory holds no results.
+
+    This function used to fall back to generate_sample_data() -- np.random
+    draws around hand-picked base accuracies and degradation rates -- and
+    return them indistinguishably from real data. Running the script in a
+    clean checkout therefore produced a complete set of publication-ready
+    figures, axis labels and all, from numbers no experiment had produced.
+    That is the single most dangerous thing in this repository's history, so
+    the fallback is gone: no results means no figures.
+    """
     results = []
     results_path = Path(results_dir)
 
-    for json_file in results_path.glob('*.json'):
-        with open(json_file) as f:
-            data = json.load(f)
-            results.append(data)
+    if results_path.exists():
+        for json_file in sorted(results_path.rglob('*.json')):
+            with open(json_file) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                results.extend(data)
+            else:
+                results.append(data)
 
     if not results:
-        # Generate sample data for demonstration
-        results = generate_sample_data()
+        raise NoResultsError(
+            f"No experiment results found under {results_path.resolve()}.\n"
+            "\n"
+            "Figures are generated only from measured runs. Produce some first:\n"
+            "  ./build/titans_experiment                 # assumed-degradation "
+            "stand-in; NOT evidence about a model\n"
+            "  ./build/titans_llm_experiment --backend vllm --port 8000 \\\n"
+            "      --events 1000 --out results/llm       # live model\n"
+            "\n"
+            "There is deliberately no synthetic fallback: a figure that cannot "
+            "be traced to a run is worse than no figure."
+        )
 
     return pd.DataFrame(results)
-
-
-def generate_sample_data() -> List[Dict]:
-    """Generate sample experiment data for figure generation."""
-    methods = ['NoHistory', 'FullHistory', 'FixedWindow', 'TimeFilter', 'VersionedContext']
-    contamination_rates = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50]
-
-    np.random.seed(42)
-    results = []
-
-    base_accuracies = {
-        'NoHistory': 0.72,
-        'FullHistory': 0.68,
-        'FixedWindow': 0.76,
-        'TimeFilter': 0.78,
-        'VersionedContext': 0.85,
-    }
-
-    degradation_rates = {
-        'NoHistory': 0.5,
-        'FullHistory': 0.6,
-        'FixedWindow': 0.4,
-        'TimeFilter': 0.35,
-        'VersionedContext': 0.2,
-    }
-
-    for rate in contamination_rates:
-        for method in methods:
-            base = base_accuracies[method]
-            deg = degradation_rates[method]
-
-            acc_clean = base + np.random.normal(0, 0.02)
-            acc_contam = base - rate * deg + np.random.normal(0, 0.02)
-
-            results.append({
-                'experiment_id': f'{method}_{int(rate*100)}pct',
-                'method_name': method,
-                'contamination_rate': rate,
-                'accuracy': acc_clean * (1 - rate) + acc_contam * rate,
-                'accuracy_clean': acc_clean,
-                'accuracy_contaminated': acc_contam,
-                'accuracy_delta': acc_clean - acc_contam,
-                'stale_reference_rate': rate * deg * 0.8 + np.random.normal(0, 0.01),
-                'entity_confusion_rate': rate * deg * 0.3 + np.random.normal(0, 0.01),
-                'inference_persistence_rate': rate * deg * 0.4 + np.random.normal(0, 0.01),
-                'false_positive_rate': 0.05 + rate * 0.1 * deg,
-                'false_negative_rate': 0.08 + rate * 0.15 * deg,
-                'avg_latency_ms': 50 + np.random.normal(0, 5),
-            })
-
-    return results
 
 
 def fig1_accuracy_comparison(df: pd.DataFrame):
@@ -370,10 +351,14 @@ def table1_main_results(df: pd.DataFrame):
     print("Generated: table1_main_results.tex")
 
 
-def generate_all_figures():
-    """Generate all figures for the paper."""
+def generate_all_figures(results_dir: str = 'results'):
+    """Generate all figures for the paper from measured results only."""
     print("Loading experiment results...")
-    df = load_results()
+    try:
+        df = load_results(results_dir)
+    except NoResultsError as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        raise SystemExit(2)
 
     print(f"Loaded {len(df)} experiment results")
     print(f"Methods: {df['method_name'].unique()}")
@@ -395,4 +380,9 @@ def generate_all_figures():
 
 
 if __name__ == '__main__':
-    generate_all_figures()
+    ap = argparse.ArgumentParser(
+        description="Generate figures from measured experiment results.")
+    ap.add_argument('--results', default='results',
+                    help='directory of experiment result JSON files')
+    args = ap.parse_args()
+    generate_all_figures(args.results)
