@@ -37,6 +37,8 @@ extern bool run_order_book_tests();
 extern bool run_versioned_entity_tests();
 extern bool run_contamination_tests();
 extern bool run_json_tests();
+extern bool run_lane_isolation_tests();
+extern bool run_task_design_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -59,7 +61,9 @@ int main(int argc, char* argv[]) {
         {"Order Book", run_order_book_tests},
         {"Versioned Entity", run_versioned_entity_tests},
         {"Contamination", run_contamination_tests},
-        {"JSON", run_json_tests}
+        {"JSON", run_json_tests},
+        {"Lane Isolation", run_lane_isolation_tests},
+        {"Task Design", run_task_design_tests}
     };
 
     for (const auto& [name, test_func] : modules) {
