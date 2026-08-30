@@ -252,6 +252,7 @@ cd build && ctest --output-on-failure
 |---|---|
 | `titans_benchmark` | Fast-path latency, with a methodology self-check |
 | `titans_dataset` | Label real trades and audit for leakage |
+| `titans_lanes` | Replay real trades through both lanes, end to end |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
@@ -279,6 +280,54 @@ identical contamination draws; the only difference is whether the contamination
 reached the prompt. Contamination attempts that could not be applied — too
 little history to draw a stale value from, for instance — are excluded rather
 than counted as treated, so the treatment group is not silently diluted.
+
+---
+
+## End-to-end: both lanes over real trades
+
+`titans_lanes` is the only place the whole shape runs at once. Real trades drive
+a pinned fast lane under a declared budget; a slow lane on another core
+publishes advisories; the outcome is scored against the forward toxic-flow
+labels — adverse selection avoided, versus benign flow needlessly declined.
+
+```bash
+./build/titans_lanes data/raw/BTCUSDT-aggTrades-2024-01-15.csv \
+    --max-rows 100000 --speed 500 --ttl-ms 1000 --repeat 5
+```
+
+Replay is time-faithful: the fast lane paces to the trades' own timestamps
+divided by `--speed`, and the slow lane's simulated latency is divided by the
+same factor, so the ratio that matters — model latency against inter-trade
+interval — is preserved. Replaying as fast as the CPU allows is not a faster
+version of this experiment but a different one, and the first version of this
+program proved it: the fast lane finished 5.2 hours of tape in tens of
+milliseconds and 97% of advisories were rejected as expired.
+
+**The tool declines to score the policy, and that is the honest result:**
+
+```
+  run 1/5 ... informedness +0.0277      Informedness (TPR - FPR) across 5 runs
+  run 2/5 ... informedness -0.0039        median -0.0039, range [-0.0172, +0.0614]
+  run 3/5 ... informedness -0.0172        sd 0.0328
+  run 4/5 ... informedness -0.0110
+  run 5/5 ... informedness +0.0614      VERDICT: NOT RESOLVED
+```
+
+The median sits inside two standard deviations of the run-to-run spread, so this
+configuration measures thread scheduling rather than the policy. Earlier
+configurations produced medians as high as +0.14 — an artefact, because the
+advisory was stale and rejected most of the time so the policy barely fired.
+Driving the rejection rate down to 6% collapsed the number to +0.013 ± 0.020.
+
+So the toy order-flow slow lane does not measurably reduce adverse selection at
+this decision point. Turning knobs until a positive number appeared is the exact
+failure mode the rest of this repository exists to prevent, so the knobs stopped
+turning.
+
+What **is** measured: the fast-lane stage costs 254 ns mean against a 500 ns
+budget; the bridge drops nothing at this rate; pacing lag runs four orders of
+magnitude below the advisory lifetime; and stale advisories are rejected rather
+than acted on.
 
 ---
 
