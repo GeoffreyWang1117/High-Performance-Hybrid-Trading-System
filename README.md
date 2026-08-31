@@ -65,6 +65,13 @@ AMD Ryzen 9 5950X, 16 cores, `performance` governor, GCC 15.2, `-O3
 -march=native -flto`. Amortized batch timing, 15 repetitions, median across
 repetitions; minimum in parentheses is the interference-free estimate.
 
+These were taken on an otherwise idle host. Re-running under load moves them —
+the same suite during a concurrent GPU inference job returns 1.72 ns for
+`try_push` rather than 1.21 — which is the point of reporting the median/minimum
+spread and the `caveats` block rather than a single figure. What should
+reproduce anywhere is the ordering and the order of magnitude, not the third
+significant digit.
+
 | Operation | Cost | Throughput |
 |---|---|---|
 | `SPSCQueue::try_push` | 1.21 ns (0.99) | 826 M ops/s |
@@ -247,6 +254,19 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 cd build && ctest --output-on-failure
 ```
+
+### Reproducing every number above
+
+```bash
+scripts/reproduce.sh              # everything needing no network or GPU
+scripts/reproduce.sh --with-data  # + download real trades, run the audit
+scripts/reproduce.sh --with-llm   # + the live-model experiment
+```
+
+It rebuilds, runs each claim's source, prints what it got, and exits with the
+number of stages that failed. It also asserts the three refusals — no backend,
+no results, unreadable config — because a regression that restores a silent
+fallback would otherwise look like success.
 
 | Target | What it does |
 |---|---|
