@@ -17,11 +17,15 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /build
 
-# Copy source code
+# Copy source code.
+# examples/ is required: CMakeLists builds titans_experiment,
+# titans_llm_experiment, titans_distributed_experiment and
+# titans_config_experiment from it, so omitting it fails at configure time.
 COPY CMakeLists.txt ./
 COPY include/ ./include/
 COPY src/ ./src/
 COPY tests/ ./tests/
+COPY examples/ ./examples/
 
 # Build
 RUN mkdir build && cd build && \
@@ -50,6 +54,14 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /build/build/titans_engine /usr/local/bin/
 COPY --from=builder /build/build/titans_replay /usr/local/bin/
 COPY --from=builder /build/build/titans_benchmark /usr/local/bin/
+COPY --from=builder /build/build/titans_dataset /usr/local/bin/
+COPY --from=builder /build/build/titans_lanes /usr/local/bin/
+COPY --from=builder /build/build/titans_experiment /usr/local/bin/
+COPY --from=builder /build/build/titans_llm_experiment /usr/local/bin/
+
+# Configuration the engine actually reads. --config is fatal on a missing file,
+# so shipping the default matters.
+COPY config/ /opt/titans/config/
 
 # Copy Python components
 COPY python/ /opt/titans/python/
