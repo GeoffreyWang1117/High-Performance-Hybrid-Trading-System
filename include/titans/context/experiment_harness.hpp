@@ -135,6 +135,31 @@ public:
     /// Plausible market event categories, drawn independently of the label.
     static constexpr const char* kEventTypes[] = {"trade", "quote", "cancel"};
 
+    /// Standard deviation of a normal observation around its entity's level.
+    static constexpr double kSigma = 5.0;
+
+    /// Minimum deviation, in sigma, that makes an observation anomalous.
+    static constexpr double kAnomalyMinSigma = 4.0;
+
+    /**
+     * @brief Deviation from an entity's level that separates normal from anomalous.
+     *
+     * Exposed because the PROMPT has to state it. A model shown one or two
+     * prior observations of an entity cannot estimate that entity's spread, so
+     * without a stated tolerance it has no basis for "far" and falls back to a
+     * constant answer -- which is exactly what happened: with only 2-3 context
+     * points, Qwen2.5-3B replied "Value far below recent trades" to values that
+     * were entirely typical, and answered one class on 98-100% of trials.
+     *
+     * Stating the threshold does not give away the label. The model still has
+     * to recover the entity's current level from context, which is precisely
+     * what stale and misbound context corrupt. It converts the task from
+     * "estimate a distribution from too few points" into "use the right
+     * reference value", which is the question this experiment is actually
+     * about.
+     */
+    static constexpr double kDecisionTolerance = 3.0 * kSigma;   // 15.0
+
     explicit SyntheticDataGenerator(uint64_t seed = 42)
         : rng_(seed), uniform_(0.0, 1.0), normal_(0.0, 1.0) {}
 
@@ -160,7 +185,6 @@ public:
             level[e] = 50.0 + uniform_(rng_) * 450.0;   // levels in [50, 500]
         }
 
-        constexpr double kSigma = 5.0;
         constexpr double kDrift = 0.20;   // per-observation random walk step
 
         Timestamp current_time = 1000000000000LL;  // start at 1000 s
@@ -175,7 +199,7 @@ public:
 
             double value;
             if (is_anomaly) {
-                const double k = 4.0 + uniform_(rng_) * 4.0;          // 4-8 sigma
+                const double k = kAnomalyMinSigma + uniform_(rng_) * 4.0;   // 4-8 sigma
                 const double sign = (uniform_(rng_) < 0.5) ? -1.0 : 1.0;
                 value = level[entity_idx] + sign * k * kSigma;
             } else {

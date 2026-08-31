@@ -170,6 +170,53 @@ types is just the ranking of its constants. `titans_experiment` says so in its
 own output. Claims about models come from `titans_llm_experiment`, which queries
 a live backend and writes every raw response to the results file.
 
+### What the live-model runs actually produced
+
+Two models were run end to end against this pipeline. Both results are in
+`results/llm/`, raw responses included. Neither supports a conclusion about
+contamination, and the program says so rather than letting the table speak:
+
+| Model | Events/arm | Result |
+|---|---|---|
+| Qwen2.5-1.5B-Instruct (CPU) | 50 | answered `anomaly` to **every** event in all 6 arms |
+| Qwen2.5-3B-Instruct (GPU) | 400 | 5 of 6 arms ≥98% one class |
+
+The 1.5B table is the instructive one, because it looks like a clean null:
+
+```
+NoHistory          0.5000   0.5000   +0.0000
+FixedWindow        0.5000   0.5000   +0.0000
+VersionedContext   0.5000   0.5000   +0.0000
+```
+
+Exactly 0.5000 six times is a constant classifier, not a finding. A model that
+answers the same thing regardless of input scores exactly 0.5 balanced accuracy
+no matter what it is shown, so every arm ties and every delta is zero by
+construction. Reading that as "contamination had no effect" would be completely
+wrong. `titans_llm_experiment` now detects this, prints a block naming each
+affected arm before any delta is interpretable, and exits 3.
+
+**The diagnosis is more interesting than the failure.** Reading the raw
+responses, the 3B model was applying the rule — `"Value diff > 15 from recent
+trade"` — but comparing against records belonging to *other entities*. Entity
+levels are spread across [50, 500], so a foreign reference makes almost any
+value look extreme. That is the entity-binding failure mode this project
+studies, occurring spontaneously on **clean** context.
+
+Three prompt revisions followed: state the numeric tolerance, require filtering
+context to matching `entity`, and add a worked example. They changed the
+model's reasoning text on 45 of 60 trials and **not one classification**. At
+that point the honest move was to stop: a fourth revision tuned until the number
+came out right is the failure mode this repository exists to prevent.
+
+So the standing conclusion is that this task needs a more capable model than the
+hardware here could host, the infrastructure to run it is verified correct
+(context sizes track the strategy, contamination reaches the prompt, latency
+scales with context, every raw response is recorded), and the guard prevents a
+degenerate run from being mistaken for a null result.
+
+### Ablations that changed nothing are labelled
+
 The ablation runner also flags configurations that changed nothing:
 
 ```

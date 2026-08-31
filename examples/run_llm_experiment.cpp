@@ -133,6 +133,18 @@ Options parse_args(int argc, char** argv) {
 // ============================================================================
 
 std::string build_system_prompt() {
+    // The tolerance is stated explicitly. A model shown one or two prior
+    // observations of an entity cannot estimate that entity's spread, and
+    // without a stated threshold it has no basis for "far" -- measured
+    // behaviour was a constant answer on 98-100% of trials, with reasoning like
+    // "Value far below recent trades" attached to entirely typical values.
+    // Stating the threshold does not reveal the label: the model must still
+    // recover the entity's current level from context, which is exactly what
+    // stale and misbound records corrupt.
+    char tol[32];
+    std::snprintf(tol, sizeof(tol), "%.0f",
+                  SyntheticDataGenerator::kDecisionTolerance);
+
     return
         "You are an anomaly detector for a market data feed.\n"
         "\n"
@@ -141,6 +153,27 @@ std::string build_system_prompt() {
         "against that entity's recent values in the context. Entities sit at "
         "very different levels, so there is no global threshold: a value that is "
         "normal for one entity may be extreme for another.\n"
+        "\n"
+        "DECISION RULE, in order:\n"
+        "  1. FILTER the context to records whose `entity` field is EXACTLY "
+        "equal to the event's `entity`. Discard every other record. Different "
+        "entities sit at unrelated levels, so a record belonging to another "
+        "entity tells you nothing and comparing against one will make almost "
+        "any value look extreme.\n"
+        "  2. Among those, take the most recent trustworthy `value` as this "
+        "entity's current level.\n"
+        "  3. Classify `anomaly` if |event value - level| > " + std::string(tol) +
+        ". Otherwise `normal`.\n"
+        "  4. If no record survives step 1, answer `normal` with low "
+        "confidence.\n"
+        "\n"
+        "Worked example. Event {\"entity\": \"entity_3\", \"value\": 212.0}. "
+        "Context [{\"entity\": \"entity_7\", \"value\": 88.0}, "
+        "{\"entity\": \"entity_3\", \"value\": 205.5}]. Step 1 keeps only the "
+        "entity_3 record. Step 2 gives level 205.5. Step 3: |212.0 - 205.5| = "
+        "6.5, which is not more than " + std::string(tol) + ", so the answer is "
+        "`normal`. The entity_7 record is ignored entirely; using it would have "
+        "given |212.0 - 88.0| = 124.0 and the wrong answer.\n"
         "\n"
         "Context records are not all trustworthy. A record may be:\n"
         "  - outdated, restamped to look current;\n"
