@@ -249,6 +249,46 @@ struct ArmResult {
         return static_cast<double>(bad) / trials.size();
     }
 
+    /**
+     * @brief Fraction of answered trials given to the most common prediction.
+     *
+     * 1.0 means the model answered identically every time. A constant
+     * classifier scores exactly 0.5 balanced accuracy no matter what it is
+     * shown, so every arm ties and the experiment silently measures nothing --
+     * which is what a 1.5B model did here, answering "anomaly" to all 50 events
+     * in all six arms.
+     */
+    double majority_share() const {
+        std::map<std::string, size_t> counts;
+        size_t total = 0;
+        for (const auto& t : trials) {
+            if (!t.parse_ok) continue;
+            ++counts[t.predicted];
+            ++total;
+        }
+        if (total == 0) return 1.0;
+        size_t best = 0;
+        for (const auto& [k, v] : counts) best = std::max(best, v);
+        return static_cast<double>(best) / total;
+    }
+
+    /// @brief The prediction the model gave most often.
+    std::string majority_class() const {
+        std::map<std::string, size_t> counts;
+        for (const auto& t : trials) {
+            if (t.parse_ok) ++counts[t.predicted];
+        }
+        std::string best;
+        size_t n = 0;
+        for (const auto& [k, v] : counts) {
+            if (v > n) { n = v; best = k; }
+        }
+        return best;
+    }
+
+    /// @brief True when the model is effectively answering the same thing always.
+    bool is_degenerate() const { return majority_share() >= 0.95; }
+
     double mean_latency_ms() const {
         if (trials.empty()) return 0.0;
         double s = 0;
@@ -414,6 +454,9 @@ void write_results(const Options& opts,
         f << "      \"balanced_accuracy\": " << arm.balanced_accuracy() << ",\n";
         f << "      \"answered\": " << arm.answered() << ",\n";
         f << "      \"parse_failure_rate\": " << arm.parse_failure_rate() << ",\n";
+        f << "      \"majority_share\": " << arm.majority_share() << ",\n";
+        f << "      \"majority_class\": \"" << arm.majority_class() << "\",\n";
+        f << "      \"degenerate\": " << (arm.is_degenerate() ? "true" : "false") << ",\n";
         f << "      \"contaminated_trials\": " << arm.contaminated_trials() << ",\n";
         f << "      \"mean_latency_ms\": " << arm.mean_latency_ms() << ",\n";
         f << "      \"trials\": [\n";
@@ -519,21 +562,23 @@ int main(int argc, char** argv) {
     // ------------------------------------------------------------------
     // Report
     // ------------------------------------------------------------------
-    std::printf("\n%-20s %10s %14s %10s %12s %10s\n",
-                "Method", "clean", "contaminated", "delta", "contam. n", "unparsed");
-    std::printf("%s\n", std::string(82, '-').c_str());
+    std::printf("\n%-18s %8s %12s %9s %10s %9s %10s\n",
+                "Method", "clean", "contaminated", "delta", "contam. n",
+                "unparsed", "1-class");
+    std::printf("%s\n", std::string(84, '-').c_str());
 
     for (size_t i = 0; i + 1 < arms.size(); i += 2) {
         const auto& clean = arms[i];
         const auto& dirty = arms[i + 1];
         const double d = dirty.balanced_accuracy() - clean.balanced_accuracy();
-        std::printf("%-20s %9.4f %13.4f %+10.4f %12zu %9.1f%%\n",
+        std::printf("%-18s %8.4f %12.4f %+9.4f %10zu %8.1f%% %9.0f%%\n",
                     clean.method.c_str(),
                     clean.balanced_accuracy(),
                     dirty.balanced_accuracy(),
                     d,
                     dirty.contaminated_trials(),
-                    100.0 * dirty.parse_failure_rate());
+                    100.0 * dirty.parse_failure_rate(),
+                    100.0 * std::max(clean.majority_share(), dirty.majority_share()));
     }
 
     std::printf(
@@ -549,6 +594,41 @@ int main(int argc, char** argv) {
         "applied (too little history to draw a stale value from, for instance)\n"
         "are excluded rather than counted as treated.\n");
 
+    // ------------------------------------------------------------------
+    // Degeneracy gate. This runs BEFORE any interpretation of the deltas,
+    // because a constant classifier makes every delta zero by construction.
+    // ------------------------------------------------------------------
+    size_t degenerate_arms = 0;
+    for (const auto& a : arms) {
+        if (a.is_degenerate()) ++degenerate_arms;
+    }
+    if (degenerate_arms > 0) {
+        std::printf(
+            "\n"
+            "================================================================\n"
+            " DEGENERATE MODEL -- THE NUMBERS ABOVE MEASURE NOTHING\n"
+            "================================================================\n");
+        for (const auto& a : arms) {
+            if (!a.is_degenerate()) continue;
+            std::printf("  %-18s %-13s answered \"%s\" on %.0f%% of trials\n",
+                        a.method.c_str(),
+                        a.contaminated_arm ? "(contaminated)" : "(clean)",
+                        a.majority_class().c_str(), a.majority_share() * 100.0);
+        }
+        std::printf(
+            "\n"
+            "  %zu of %zu arms are effectively constant classifiers. A model that\n"
+            "  answers the same thing regardless of input scores exactly 0.5\n"
+            "  balanced accuracy no matter what it is shown, so every arm ties\n"
+            "  and every delta is zero -- by construction, not by finding.\n"
+            "\n"
+            "  Nothing about contamination can be concluded from this run. The\n"
+            "  pipeline is fine (context sizes and latencies differ per method,\n"
+            "  and contaminations reached the prompt); the model is not doing\n"
+            "  the task. Use a larger model, or fix the prompt, and re-run.\n",
+            degenerate_arms, arms.size());
+    }
+
     if (opts.num_events < 200) {
         std::printf(
             "\nNOTE: %zu events per arm is a smoke-scale run. Deltas of a few\n"
@@ -558,5 +638,9 @@ int main(int argc, char** argv) {
     }
 
     write_results(opts, backend->name(), arms);
-    return 0;
+
+    // Exit non-zero on a degenerate run. A pipeline that treats "it produced a
+    // results file" as success would otherwise archive a table of 0.5000s as
+    // though it were data.
+    return degenerate_arms > 0 ? 3 : 0;
 }
