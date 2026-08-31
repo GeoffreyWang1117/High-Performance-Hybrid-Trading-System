@@ -18,6 +18,10 @@
 #include "titans/trading/shadow_engine.hpp"
 #include "titans/strategy/strategy_base.hpp"
 #include "titans/market_data/binary_logger.hpp"
+#include "titans/core/json.hpp"
+
+#include <fstream>
+#include <sstream>
 
 #include <iostream>
 #include <csignal>
@@ -70,10 +74,100 @@ struct Config {
     std::string data_path;
     std::string log_path = "./data/logs";
     bool benchmark = false;
+
+    // Risk and strategy parameters, defaulted here and overridable from
+    // --config. These used to be hardcoded at the call site while
+    // config/engine.yaml and config/strategy.yaml sat unread beside them --
+    // the project has no YAML parser, so those files described behaviour that
+    // did not exist.
+    double max_position_size = 10.0;
+    double max_order_size = 1.0;
+    double max_daily_loss_usd = 1000.0;
+    double max_drawdown_pct = 5.0;
+
+    std::string strategy_name = "Momentum_20";
+    int strategy_lookback = 20;
+    double strategy_threshold = 0.02;
+    double initial_capital = 100000.0;
+    double max_position_pct = 0.1;
 };
 
-Config parse_args(int argc, char* argv[]) {
+/**
+ * @brief Overlay settings from a JSON config file onto @p config.
+ *
+ * Command-line flags are applied AFTER this, so an explicit flag always wins
+ * over the file. Returns false and explains itself on any problem; the caller
+ * treats that as fatal rather than proceeding with a config the operator
+ * believes is in effect but is not.
+ */
+bool load_config_file(const std::string& path, Config& config) {
+    std::ifstream f(path);
+    if (!f) {
+        std::cerr << "config: cannot open " << path << "\n";
+        return false;
+    }
+    std::stringstream buf;
+    buf << f.rdbuf();
+
+    auto parsed = json::try_parse(buf.str());
+    if (!parsed) {
+        std::cerr << "config: " << path << " is not valid JSON\n";
+        return false;
+    }
+    const json::Value& root = *parsed;
+    if (!root.is_object()) {
+        std::cerr << "config: " << path << " must contain a JSON object\n";
+        return false;
+    }
+
+    if (root.contains("mode"))     config.mode = root["mode"].as_string(config.mode);
+    if (root.contains("log_path")) config.log_path = root["log_path"].as_string(config.log_path);
+
+    if (root.contains("symbols")) {
+        const auto& arr = root["symbols"].as_array();
+        if (!arr.empty()) {
+            config.symbols.clear();
+            for (const auto& v : arr) config.symbols.push_back(Symbol(v.as_string()));
+        }
+    }
+
+    if (root.contains("risk")) {
+        const json::Value& r = root["risk"];
+        config.max_position_size  = r["max_position_size"].as_number(config.max_position_size);
+        config.max_order_size     = r["max_order_size"].as_number(config.max_order_size);
+        config.max_daily_loss_usd = r["max_daily_loss_usd"].as_number(config.max_daily_loss_usd);
+        config.max_drawdown_pct   = r["max_drawdown_pct"].as_number(config.max_drawdown_pct);
+    }
+
+    if (root.contains("strategy")) {
+        const json::Value& st = root["strategy"];
+        config.strategy_name      = st["name"].as_string(config.strategy_name);
+        config.strategy_lookback  = st["lookback"].as_int(config.strategy_lookback);
+        config.strategy_threshold = st["threshold"].as_number(config.strategy_threshold);
+        config.initial_capital    = st["initial_capital"].as_number(config.initial_capital);
+        config.max_position_pct   = st["max_position_pct"].as_number(config.max_position_pct);
+    }
+
+    std::cout << "Loaded configuration from " << path << "\n";
+    return true;
+}
+
+Config parse_args(int argc, char* argv[], bool* config_error = nullptr) {
     Config config;
+
+    // Pre-scan for --config so the file is applied FIRST and command-line flags
+    // can then override it. Processing them in argv order would make the result
+    // depend on flag position, which is a surprise nobody wants from a config
+    // file.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--config") {
+            config.config_file = argv[i + 1];
+            if (!load_config_file(config.config_file, config)) {
+                if (config_error) *config_error = true;
+            }
+            break;
+        }
+    }
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -87,6 +181,11 @@ Config parse_args(int argc, char* argv[]) {
             config.config_file = argv[++i];
         } else if (arg == "--symbols" && i + 1 < argc) {
             std::string symbols_str = argv[++i];
+            // Replace, do not append. A --config file may already have set
+            // symbols, and an explicit flag has to win outright: appending
+            // would leave the operator trading instruments they thought they
+            // had deselected.
+            config.symbols.clear();
             size_t pos = 0;
             while ((pos = symbols_str.find(',')) != std::string::npos) {
                 config.symbols.push_back(Symbol(symbols_str.substr(0, pos)));
@@ -244,24 +343,26 @@ void run_shadow_mode(const Config& config) {
 
     // Create and add strategies
     RiskLimits risk_limits;
-    risk_limits.max_position_size = to_quantity(10.0);
-    risk_limits.max_order_size = to_quantity(1.0);
-    risk_limits.max_daily_loss_usd = 1000.0;
+    risk_limits.max_position_size = to_quantity(config.max_position_size);
+    risk_limits.max_order_size = to_quantity(config.max_order_size);
+    risk_limits.max_daily_loss_usd = config.max_daily_loss_usd;
+    risk_limits.max_drawdown_pct = config.max_drawdown_pct;
 
     auto risk_manager = std::make_unique<RiskManager>(bus, risk_limits);
 
     StrategyConfig strategy_config;
-    strategy_config.name = "Momentum_20";
+    strategy_config.name = config.strategy_name;
     strategy_config.id = 1;
     strategy_config.symbols = config.symbols;
-    strategy_config.initial_capital = 100000.0;
-    strategy_config.max_position_pct = 0.1;
+    strategy_config.initial_capital = config.initial_capital;
+    strategy_config.max_position_pct = config.max_position_pct;
 
     auto strategy = std::make_unique<MomentumStrategy>(
-        bus, *risk_manager, strategy_config, 20, 0.02);
+        bus, *risk_manager, strategy_config,
+        config.strategy_lookback, config.strategy_threshold);
 
     engine.add_strategy(std::move(strategy), std::move(risk_manager),
-                        "Momentum_20", true);
+                        config.strategy_name, true);
 
     // Start the engine
     engine.start();
@@ -435,7 +536,15 @@ int main(int argc, char* argv[]) {
     print_banner();
 
     // Parse command line arguments
-    Config config = parse_args(argc, argv);
+    bool config_error = false;
+    Config config = parse_args(argc, argv, &config_error);
+    if (config_error) {
+        // Refuse to start on a config the operator believes is in effect but
+        // is not. Silently falling back to defaults is how a risk limit ends
+        // up ten times larger than anyone intended.
+        std::cerr << "Refusing to start with an unusable --config file.\n";
+        return 2;
+    }
 
     // Run requested mode
     if (config.benchmark) {

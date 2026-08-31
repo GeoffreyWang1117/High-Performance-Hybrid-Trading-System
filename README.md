@@ -257,6 +257,13 @@ cd build && ctest --output-on-failure
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
+
+`titans_engine --config config/engine.json` reads risk limits, symbols, and
+strategy parameters from the file; command-line flags override it, and an
+unreadable or malformed file is fatal rather than a silent fall back to
+defaults. The previous `config/engine.yaml` and `config/strategy.yaml` were
+never read by any code — the project has no YAML parser — so they documented
+behaviour that did not exist and have been replaced.
 | `titans_tests` | 9 modules including lane isolation and task design |
 
 ### Running against a live model

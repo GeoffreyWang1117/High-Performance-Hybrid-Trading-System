@@ -286,8 +286,33 @@ struct ArmResult {
         return best;
     }
 
-    /// @brief True when the model is effectively answering the same thing always.
-    bool is_degenerate() const { return majority_share() >= 0.95; }
+    /// @brief Fraction of trials whose GROUND TRUTH is the majority class.
+    ///
+    /// The comparison point for majority_share(). On a task with a 15% positive
+    /// rate a well-calibrated classifier SHOULD answer the majority class about
+    /// 85% of the time, so a fixed threshold near that value would flag correct
+    /// behaviour as degenerate.
+    double base_rate() const {
+        size_t anom = 0, total = 0;
+        for (const auto& t : trials) {
+            if (!t.parse_ok) continue;
+            if (t.ground_truth_anomaly) ++anom;
+            ++total;
+        }
+        if (total == 0) return 1.0;
+        const double p = static_cast<double>(anom) / total;
+        return std::max(p, 1.0 - p);
+    }
+
+    /**
+     * @brief True when the model is answering the same thing regardless of input.
+     *
+     * The bar is near-constancy (98%), not "predicts one class a lot". Skew is
+     * expected here -- see base_rate() -- and only a classifier that has stopped
+     * responding to its input at all makes the deltas meaningless by
+     * construction.
+     */
+    bool is_degenerate() const { return majority_share() >= 0.98; }
 
     double mean_latency_ms() const {
         if (trials.empty()) return 0.0;
@@ -455,6 +480,7 @@ void write_results(const Options& opts,
         f << "      \"answered\": " << arm.answered() << ",\n";
         f << "      \"parse_failure_rate\": " << arm.parse_failure_rate() << ",\n";
         f << "      \"majority_share\": " << arm.majority_share() << ",\n";
+        f << "      \"base_rate\": " << arm.base_rate() << ",\n";
         f << "      \"majority_class\": \"" << arm.majority_class() << "\",\n";
         f << "      \"degenerate\": " << (arm.is_degenerate() ? "true" : "false") << ",\n";
         f << "      \"contaminated_trials\": " << arm.contaminated_trials() << ",\n";
@@ -581,6 +607,11 @@ int main(int argc, char** argv) {
                     100.0 * std::max(clean.majority_share(), dirty.majority_share()));
     }
 
+    std::printf("\n'1-class' is the share of answers given to the model's most "
+                "common\nprediction. Compare against the base rate of %.0f%%: skew "
+                "is expected\non an imbalanced task, near-constancy is not.\n",
+                arms.empty() ? 0.0 : arms.front().base_rate() * 100.0);
+
     std::printf(
         "\nBalanced accuracy (mean of per-class recall; chance = 0.5) over trials\n"
         "the model answered in parseable form. Unparsed responses are reported\n"
@@ -610,10 +641,12 @@ int main(int argc, char** argv) {
             "================================================================\n");
         for (const auto& a : arms) {
             if (!a.is_degenerate()) continue;
-            std::printf("  %-18s %-13s answered \"%s\" on %.0f%% of trials\n",
+            std::printf("  %-18s %-13s answered \"%s\" on %.1f%% of trials "
+                        "(base rate %.1f%%)\n",
                         a.method.c_str(),
                         a.contaminated_arm ? "(contaminated)" : "(clean)",
-                        a.majority_class().c_str(), a.majority_share() * 100.0);
+                        a.majority_class().c_str(), a.majority_share() * 100.0,
+                        a.base_rate() * 100.0);
         }
         std::printf(
             "\n"

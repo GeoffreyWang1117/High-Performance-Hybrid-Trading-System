@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Engine configuration, read by titans_engine --config.",
+    "Replaces config/engine.yaml and config/strategy.yaml, which no code ever",
+    "read: the project has no YAML parser, so those files documented behaviour",
+    "that did not exist. This is JSON because titans/core/json.hpp is a real",
+    "parser the engine already links."
+  ],
+  "mode": "shadow",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "log_path": "./data/logs",
+  "risk": {
+    "max_position_size": 10.0,
+    "max_order_size": 1.0,
+    "max_daily_loss_usd": 1000.0,
+    "max_drawdown_pct": 5.0
+  },
+  "strategy": {
+    "name": "Momentum_20",
+    "lookback": 20,
+    "threshold": 0.02,
+    "initial_capital": 100000.0,
+    "max_position_pct": 0.1
+  }
+}
