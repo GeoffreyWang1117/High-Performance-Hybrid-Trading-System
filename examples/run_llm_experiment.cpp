@@ -455,7 +455,16 @@ void write_results(const Options& opts,
     if (std::system(cmd.c_str()) != 0) {
         std::fprintf(stderr, "warning: could not create %s\n", opts.out_dir.c_str());
     }
-    const std::string path = opts.out_dir + "/llm_experiment.json";
+    // Name the file after the model and seed. A fixed name means the next run
+    // silently overwrites the last, so two runs cannot be compared and a
+    // committed result cannot be traced to the run that produced it.
+    std::string tag = opts.model.empty() ? std::string("default") : opts.model;
+    for (char& c : tag) {
+        if (c == '/' || c == ':' || c == ' ') c = '_';
+    }
+    const std::string path = opts.out_dir + "/llm_" + tag + "_seed" +
+                             std::to_string(opts.seed) + "_n" +
+                             std::to_string(opts.num_events) + ".json";
     std::ofstream f(path);
     if (!f) {
         std::fprintf(stderr, "warning: could not write %s\n", path.c_str());
