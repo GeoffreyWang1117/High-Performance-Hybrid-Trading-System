@@ -12,6 +12,8 @@ Streamlit-based dashboard for:
 
 import streamlit as st
 import pandas as pd
+import subprocess
+
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
@@ -54,8 +56,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def load_sample_data():
-    """Load sample data for demonstration"""
+def generate_demo_data():
+    """Generate synthetic data for the demo dashboard.
+
+    Nothing here comes from a running engine. Every price, fill, position and
+    book level below is an np.random draw with a fixed seed. The dashboard
+    labels itself accordingly -- a screenshot of a P&L curve is indistinguishable
+    from a real one, so the page has to say what it is.
+    """
     np.random.seed(42)
 
     # Generate price data
@@ -108,18 +116,82 @@ def load_sample_data():
     return price_data, trades_df, positions_df, book_data
 
 
+def _demo_stats_from(trades_df: pd.DataFrame) -> "DailyStats":
+    """Summarize the synthetic trades on this page into a DailyStats.
+
+    Every field traces back to the np.random draws in generate_demo_data(), so
+    the numbers are internally consistent with the charts above them instead of
+    being invented separately.
+    """
+    pnl = trades_df["pnl"] if "pnl" in trades_df else pd.Series(dtype=float)
+    total = float(pnl.sum()) if len(pnl) else 0.0
+    wins = float((pnl > 0).mean()) if len(pnl) else 0.0
+    # Per-trade Sharpe, not annualized: annualizing a few dozen synthetic fills
+    # would dress noise up as a track record.
+    sharpe = float(pnl.mean() / pnl.std()) if len(pnl) > 1 and pnl.std() > 0 else 0.0
+    curve = pnl.cumsum() if len(pnl) else pd.Series(dtype=float)
+    if len(curve):
+        peak = curve.cummax()
+        drawdown = float(((peak - curve) / peak.replace(0, float("nan"))).max())
+        if drawdown != drawdown:      # NaN
+            drawdown = 0.0
+    else:
+        drawdown = 0.0
+
+    return DailyStats(
+        date=datetime.now().strftime("%Y-%m-%d"),
+        total_pnl=total,
+        realized_pnl=total,
+        unrealized_pnl=0.0,
+        num_trades=int(len(pnl)),
+        win_rate=wins,
+        max_drawdown=drawdown,
+        sharpe_ratio=sharpe,
+        positions=[],
+        trades=[],
+    )
+
+
+def _detect_gpu() -> str:
+    """Return a GPU description, or an empty string if none is present.
+
+    Queries nvidia-smi rather than asserting availability.
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            names = [n.strip() for n in out.stdout.strip().splitlines() if n.strip()]
+            if len(names) == 1:
+                return names[0]
+            return f"{len(names)}x {names[0]}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
 def render_header():
-    """Render dashboard header"""
+    """Render dashboard header."""
+    st.error(
+        "**DEMO DATA — nothing on this page comes from a running engine.** "
+        "Prices, fills, positions and book levels are all `np.random` draws "
+        "with a fixed seed. This page exists to show the layout, not results. "
+        "Wiring it to a live engine is listed under Known Limitations in the "
+        "README."
+    )
+
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
         st.title("🚀 Titans Trading Dashboard")
 
     with col2:
-        st.metric("Status", "🟢 Running")
+        st.metric("Status", "demo")
 
     with col3:
-        st.write(f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
+        st.write(f"Rendered: {datetime.now().strftime('%H:%M:%S')}")
 
 
 def render_pnl_metrics(trades_df: pd.DataFrame, positions_df: pd.DataFrame):
@@ -323,31 +395,31 @@ def render_trades(trades_df: pd.DataFrame):
     )
 
 
-def render_llm_insights():
-    """Render LLM-generated insights"""
+def render_llm_insights(trades_df: pd.DataFrame):
+    """Render LLM-generated insights over this page's synthetic trades."""
     st.subheader("🤖 AI Insights")
 
     if TradingAnalyzer is None:
         st.warning("LLM Analytics module not available")
         return
 
+    st.caption(
+        "The figures below are computed from this page's synthetic trades. "
+        "Asking a model to comment on them produces commentary about random "
+        "numbers, which is worth reading as a demonstration of the prompt and "
+        "nothing else."
+    )
+
     if st.button("Generate Analysis"):
         with st.spinner("Generating AI analysis..."):
             try:
                 analyzer = TradingAnalyzer()
-                # Create sample stats
-                stats = DailyStats(
-                    date=datetime.now().strftime("%Y-%m-%d"),
-                    total_pnl=1523.45,
-                    realized_pnl=1234.56,
-                    unrealized_pnl=288.89,
-                    num_trades=47,
-                    win_rate=0.62,
-                    max_drawdown=0.034,
-                    sharpe_ratio=1.85,
-                    positions=[],
-                    trades=[]
-                )
+                # Derived from the demo trades on this page rather than
+                # hardcoded. The previous version passed fixed numbers --
+                # total_pnl 1523.45, sharpe 1.85 -- so the model wrote
+                # confident commentary about a P&L that existed nowhere, and
+                # the output read as genuine analysis.
+                stats = _demo_stats_from(trades_df)
                 analysis = analyzer.generate_daily_report(stats)
                 st.markdown(analysis)
             except Exception as e:
@@ -372,22 +444,34 @@ def render_sidebar():
         st.divider()
 
         st.header("📊 Quick Stats")
-        st.metric("Active Positions", "2")
-        st.metric("Open Orders", "5")
-        st.metric("Today's Trades", "47")
+        # Previously hardcoded to 2 / 5 / 47 regardless of anything on screen.
+        st.metric("Active Positions", "—")
+        st.metric("Open Orders", "—")
+        st.metric("Today's Trades", "—")
+        st.caption("No engine connected; see the banner above.")
 
         st.divider()
 
         st.header("🔧 System")
-        st.success("Engine: Running")
-        st.success("Market Data: Connected")
-        st.info("GPU: Available")
+        # These used to be hardcoded successes -- "Engine: Running",
+        # "Market Data: Connected", "GPU: Available" -- displayed whether or
+        # not any of it was true. A status light that is always green is not a
+        # status light. GPU presence is now actually queried; the other two are
+        # marked unknown until the dashboard is wired to an engine.
+        st.warning("Engine: not connected (demo mode)")
+        st.warning("Market Data: not connected (demo mode)")
+
+        gpu = _detect_gpu()
+        if gpu:
+            st.success(f"GPU: {gpu}")
+        else:
+            st.info("GPU: none detected")
 
 
 def main():
     """Main application"""
     # Load data
-    price_data, trades_df, positions_df, book_data = load_sample_data()
+    price_data, trades_df, positions_df, book_data = generate_demo_data()
 
     # Render components
     render_sidebar()
@@ -417,7 +501,7 @@ def main():
         render_order_book(book_data)
 
     with tab4:
-        render_llm_insights()
+        render_llm_insights(trades_df)
 
 
 if __name__ == "__main__":
