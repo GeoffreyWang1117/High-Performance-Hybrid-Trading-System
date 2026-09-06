@@ -21,6 +21,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The fast/slow boundary and why each mechanism is shaped the way it is |
 | [docs/RELATED_WORK.md](docs/RELATED_WORK.md) | What here is genuinely unusual, and what is a re-implementation |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What is next, in priority order, and what industry practice each item comes from |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
