@@ -23,6 +23,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/RELATED_WORK.md](docs/RELATED_WORK.md) | What here is genuinely unusual, and what is a re-implementation |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is next, in priority order, and what industry practice each item comes from |
 | [docs/FRESHNESS.md](docs/FRESHNESS.md) | Advisory age as a contract: why expiry was the wrong knob |
+| [docs/LATENCY.md](docs/LATENCY.md) | Tick to trade, per stage, and where the coordinated-omission correction fails |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -116,6 +117,52 @@ The last two rows are a finding rather than a datum: `EventBus::publish` spends
 already hold an ingress timestamp should use `publish_prestamped()`, which is
 also more correct, since dispatch time is a worse estimate of arrival than the
 stamp taken when the packet landed.
+
+### Tick to trade
+
+Those are per-operation costs, and a system is not a sum of them. `titans_ticktotrade`
+runs the real path over the real tape — ingest, book, signal, risk, order — with
+the strategy logic inside the measured region, and stamps each boundary once
+rather than bracketing each stage twice. 400,000 trades, 658.9 minutes of tape.
+
+| stage | mean | p99 | p99.9 | share |
+|---|---|---|---|---|
+| ingest | under floor | 110.3 ns | 210.3 ns | 6.6% |
+| `L2OrderBook` update + top of book | 170.0 ns | 780.9 ns | 1609.2 ns | 40.4% |
+| advisory read + policy | 104.6 ns | 210.3 ns | 580.9 ns | 24.9% |
+| `RiskManager::check_order` | 90.8 ns | 130.3 ns | 290.3 ns | 21.6% |
+| order out to the wire | under floor | under floor | under floor | 6.5% |
+| **end to end** | **420.4 ns** | **1100.9 ns** | **2305.6 ns** | |
+
+Two of the five stages cost less than three times the clock read used to measure
+them, so the table refuses them rather than printing a number. The stage means
+sum to the end-to-end mean exactly, which is the property a boundary chain has
+and five nested scopes do not; the share column uses means because means add and
+percentiles do not. The instrument costs a measured 23.3 ns per boundary, 139.7 ns
+per tick, and that figure is printed in the header of every run rather than
+assumed away.
+
+**The 1101 ns is what a closed-loop benchmark would report, and quoted alone it
+is misleading.** It is the handler's own cost and nothing else. Measured from
+the moment each tick was *due*, the same run gives a p99 of **78.9 µs** — 72×
+larger — because 43% of these trades share a millisecond with the one before
+them and the queue builds from arrivals bunching. A host-jitter control, the
+same schedule with no pipeline attached, has a p99 of 3.6 µs, so the tail clears
+the machine by 22× and is real.
+
+Gil Tene's coordinated-omission correction is the standard repair for this, and
+on this workload **it recovers under 2% of the gap while synthesising 8,741
+samples**. It infers omission from a service time longer than the expected
+interval; here no single call is slow, so it has nothing to find. Accelerating
+the tape 512× moves the two numbers in opposite directions: service p99 *falls*
+monotonically from 1844 ns to 621 ns while the real tail climbs to 2.17 ms. Full
+account, including the saturation sweep, the run-to-run spread, and what none of
+it settles, in [docs/LATENCY.md](docs/LATENCY.md).
+
+```
+./build/titans_ticktotrade --data data/raw/BTCUSDT-aggTrades-2024-01-15.csv \
+    --rows 400000 --speed 2000 --core 2 --slow-core 4 --sweep
+```
 
 ### The benchmark checks itself first
 
@@ -340,11 +387,12 @@ fallback would otherwise look like success.
 | `titans_dataset` | Label real trades and audit for leakage |
 | `titans_lanes` | Replay real trades through both lanes, end to end |
 | `titans_walkforward` | Out-of-sample policy evaluation across many days |
+| `titans_ticktotrade` | Per-stage and end-to-end latency over the real path |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 15 modules including lane isolation, task design, the walk-forward protocol, and the freshness contract |
+| `titans_tests` | 16 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, and the latency instrument |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -641,7 +689,7 @@ include/titans/bench/         measurement: TSC timing, noise floor, machine fing
 include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 15 test modules
+src/, examples/, tests/       binaries, experiment drivers, 16 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results

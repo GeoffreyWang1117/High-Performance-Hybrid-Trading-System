@@ -92,6 +92,47 @@ This is a solved problem outside trading, under the name *feature freshness*.
 
 ## P1 — End-to-end tick-to-trade histogram, with per-stage attribution
 
+**Status: DONE. Full account in [LATENCY.md](LATENCY.md).**
+
+`titans_ticktotrade` runs the real path -- ingest, book, signal, risk, order --
+over the real tape with the strategy logic inside the measured region, and
+prints per-stage and end-to-end percentiles to p99.9. Two of the five stages
+come back below the clock's resolution and are refused rather than printed,
+which is the rule the benchmark table already followed and the reason the table
+is worth reading.
+
+The item asked for the coordinated-omission correction on the end-to-end number.
+It is there, and building it produced a result the item did not anticipate: on
+this workload **the correction recovers almost none of the tail it exists to
+recover.** Measuring from each tick's own due time gives a p99 two orders of
+magnitude above the handler-only figure -- 78.9 us against 1.10 us -- and the
+correction closes under 2% of that gap while synthesising 8,741 samples. The
+reason is structural. Tene's correction infers omission from a service time longer than
+the expected interval, and here no single call is slow -- the queue builds from
+arrivals bunching. The correction cannot see that, and it reports success
+either way.
+
+So the deliverable is the correction plus the evidence for when to distrust it.
+A saturation sweep drives the tape from 125x to 64000x and shows the two metrics
+moving in opposite directions: the handler-only p99 FALLS from 1844 ns to 621 ns
+while the real tail climbs to 2.17 ms. A host-jitter control runs the same
+schedule with no pipeline attached, so a tail that does not clear the machine's
+own lateness is reported as measuring nothing.
+
+Three things this left open, none of which block P2:
+
+- The book stage is the largest at 40.4% and the table locates it without
+  explaining it. `L2OrderBook::update_level` calls `now_ns()` unconditionally
+  and the stage calls it twice; that is cheap to settle and has not been.
+- `service` and `response` disagree by 72x, and nothing prevents a future reader
+  from quoting the smaller one as tick-to-trade.
+- The sweep brackets the saturation point rather than finding the knee, because
+  the low end costs wall time proportional to 1/speed.
+
+The original text follows, unedited.
+
+---
+
 ### What the measurement says
 
 Every latency number in this repository is a **per-operation** cost:

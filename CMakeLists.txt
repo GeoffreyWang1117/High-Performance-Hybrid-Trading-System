@@ -152,6 +152,12 @@ add_executable(titans_walkforward
 )
 target_link_libraries(titans_walkforward PRIVATE titans_core)
 
+# Tick-to-trade: per-stage and end-to-end latency over the real path
+add_executable(titans_ticktotrade
+    src/tools/pipeline_main.cpp
+)
+target_link_libraries(titans_ticktotrade PRIVATE titans_core titans_trading Threads::Threads)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark

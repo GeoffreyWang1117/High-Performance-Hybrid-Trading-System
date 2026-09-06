@@ -23,6 +23,7 @@ if(GTest_FOUND)
         test_context_contamination.cpp
         test_walk_forward.cpp
         test_freshness.cpp
+        test_pipeline_latency.cpp
     )
 
     target_link_libraries(titans_tests
@@ -55,6 +56,7 @@ else()
         test_context_contamination.cpp
         test_walk_forward.cpp
         test_freshness.cpp
+        test_pipeline_latency.cpp
     )
 
     target_link_libraries(titans_tests

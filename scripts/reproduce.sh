@@ -178,6 +178,32 @@ stage "Real market data (README leakage audit)"
   "$BUILD_DIR"/titans_lanes "$CSV" --max-rows 100000 --speed 500 --ttl-ms 1000 \
       --repeat 3 --advisory parameter >/dev/null 2>&1
   check "shipping a parameter meets its freshness SLO" test $? -eq 0
+
+  stage "Tick-to-trade latency (README: per-stage and end-to-end)"
+  # ROADMAP P1. The budget is deliberately generous: this stage asserts that the
+  # instrument still works and still refuses what it cannot resolve, not that
+  # the host is quiet. A p99 regression is P2's job, once there is a series to
+  # compare against.
+  # JSON goes to /tmp deliberately. The committed artifact under results/latency
+  # is a 400k-row run WITH the saturation sweep, and this stage is a 100k-row
+  # smoke test; writing both to the same path would silently replace the
+  # published numbers with different ones.
+  "$BUILD_DIR"/titans_ticktotrade --data "$CSV" --rows 100000 --probe-rows 50000 \
+      --speed 2000 --budget-ns 20000 --json /tmp/titans_t2t.json \
+      > /tmp/titans_t2t.out 2>&1
+  check "end-to-end service p99 inside its declared budget" test $? -eq 0
+  sed -n '/PER-STAGE/,/^$/p' /tmp/titans_t2t.out | sed 's/^/  /'
+
+  # Two stages of the five cost less than the clock used to measure them. The
+  # table must SAY so rather than print a number for them; a build where every
+  # cell carries a figure has lost the rule, not gained precision.
+  grep -q "under floor" /tmp/titans_t2t.out
+  check "a stage below the timing floor is refused, not printed" test $? -eq 0
+
+  # The tail has to clear the host-jitter control, or the run measured the
+  # machine and the response figures mean nothing.
+  grep -q "below the host floor" /tmp/titans_t2t.out
+  check "the response tail clears the host-jitter control" test $? -ne 0
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,117 @@
+TICK-TO-TRADE
+  TSC 3.3999 GHz | single-shot floor: 20.00 ns (p99 20.00 ns) | resolvable above 60.00 ns
+  [caveat] No isolcpus/nohz_full: the kernel schedules other work on the measured core. Tail percentiles (p99.9+) include unrelated interference and should be treated as upper bounds.
+  [caveat] SMT is enabled: the sibling hyperthread shares execution resources with the measured core. Benchmarks pin to one logical CPU but do not idle its sibling.
+  [caveat] Turbo/boost is enabled: sustained-load and burst measurements run at different clocks.
+
+Loading data/raw/BTCUSDT-aggTrades-2024-01-15.csv
+  400000 trades, 658.9 minutes of tape, replayed at 2000x
+
+  [caveat] aggTrades carries no book depth. The book stage is fed
+  levels synthesised from trades and trimmed to 64 per side. The
+  TIMING is real -- the real structure, real level counts, real cache
+  behaviour -- but the book's CONTENTS are not a real book, and no
+  claim here depends on them being one.
+
+PROBE COST (100000 ticks, unpaced, 2 repetitions each)
+  without stamps     242.3 ns/tick
+  with stamps        382.0 ns/tick
+  probe              139.7 ns/tick over 6 boundaries (23.3 ns each)
+
+  A hardware tap keeps the instrument off the critical path.
+  Without one the honest substitute is to measure what the probe
+  costs, not to assume it is negligible. Every stage figure below
+  includes roughly one boundary read.
+
+  171995 of 400000 trades (43.0%) share a millisecond with the one
+  before them. Binance stamps to the millisecond; left as recorded,
+  every trade after the first in a cluster is due at the same instant
+  and is trivially late, so the response tail would be measuring the
+  exchange's timestamp resolution rather than this pipeline. Each
+  millisecond's trades are spread evenly across it, which preserves
+  their order and is the maximum-entropy choice given what the feed
+  records.
+
+  expected inter-tick interval (median): 500 ns at 2000x
+
+PER-STAGE (400000 ticks)
+  stage             mean           p50           p90           p99         p99.9    share
+  ----------------------------------------------------------------------------------------
+  ingest     under floor   under floor   under floor      110.3 ns      210.3 ns     6.6%
+  book          170.0 ns      120.3 ns      300.9 ns      780.9 ns     1609.2 ns    40.4%
+  signal        104.6 ns      100.3 ns      130.3 ns      210.3 ns      580.9 ns    24.9%
+  risk           90.8 ns       90.3 ns       90.3 ns      130.3 ns      290.3 ns    21.6%
+  order      under floor   under floor   under floor   under floor   under floor     6.5%
+  ----------------------------------------------------------------------------------------
+  sum              420.3 ns  (sum of stage means; end-to-end service mean 420.3 ns)
+
+  The share column uses means, which add. The percentile columns do
+  NOT add: the tick holding a stage's p99 is rarely the tick holding
+  another's. Read them as separate tails, not as a decomposition.
+  "under floor" is a refusal, not a small number: below 60.0 ns the
+  histogram is recording the probe rather than the stage.
+
+END TO END
+                      mean           p50           p90           p99         p99.9
+  ----------------------------------------------------------------------------------------
+  service         420.4 ns      371.5 ns      571.5 ns     1100.9 ns     2305.6 ns
+  corrected       441.7 ns      371.5 ns      590.3 ns     1364.4 ns     4348.0 ns
+  response       9152.1 ns      809.1 ns    14305.9 ns    78909.6 ns   378285.5 ns
+  queueing       8731.7 ns      333.8 ns    13854.1 ns    78909.6 ns   378285.5 ns
+  ........................................................................................
+  host floor      603.6 ns   under floor      235.0 ns     3595.1 ns    16489.5 ns
+
+  service    handler work only. A closed-loop benchmark reports this,
+             and a stall cannot move it: while the system is frozen it
+             takes no samples.
+  corrected  service with the coordinated-omission correction applied
+             against the expected inter-tick interval.
+  response   measured from when each tick was DUE. Exact, because the
+             replay knows its own schedule.
+  queueing   response minus service: time a tick spent already late.
+  host floor CONTROL. The same schedule with no pipeline attached, so this
+             is the machine's own lateness. Response figures at or below
+             it are not measuring this system.
+
+  The correction synthesised 8741 samples on top of 400000 real ones.
+
+  [deferral observed, correction fired] response p99 is 71.7x service
+  p99, so a handler-only number would have hidden the tail. The
+  correction recovers 1364 ns against an exact 78910 ns, -98.3% off.
+  That error is the price of not knowing your own arrival times.
+  The tail clears the host floor by 21.9x, so it is queueing and not
+  the machine.
+
+PATH
+  orders sent            400000
+  risk rejected               0
+  wire full                   0
+  quotes sized down       30698  (advisory acted on)
+  advisories read        376626, published 866912
+  ticks already late     217225 of 400000 (54.3%)
+
+  Risk limits were raised for this run so check_order exercises every
+  branch instead of short-circuiting: the rate limiter counts against
+  the wall clock and would reject nearly everything at 2000x, and the
+  price-deviation bound would trip once the tape moved past it.
+
+SATURATION SWEEP (same 400000 trades, different arrival rates)
+     speed     interval  service p99    corrected response p99     late      synth
+  --------------------------------------------------------------------------------
+      125x      8000 ns      1844 ns      1854 ns     36593 ns    15.9%          4
+      250x      4000 ns      1666 ns      1666 ns     43370 ns    25.9%          7
+      500x      2000 ns      1496 ns      1534 ns     51201 ns    35.5%        382
+     1000x      1000 ns      1308 ns      1430 ns     60839 ns    46.1%       1673
+     2000x       500 ns      1162 ns      1487 ns     78307 ns    54.4%      10319
+     8000x       125 ns       913 ns      1553 ns    142760 ns    64.1%     630510
+    32000x        31 ns       682 ns       828 ns   1190275 ns    73.3%    4164455
+    64000x        16 ns       621 ns       677 ns   2168517 ns    80.3%    8868796
+
+  Accelerating the tape by S is asking the pipeline to handle a market
+  S times busier with the same burst structure. Read down the table:
+  service p99 barely moves -- the handler's own work does not depend on
+  how fast ticks arrive -- while response p99 climbs without bound once
+  arrivals outpace it. A benchmark reporting only the first column would
+  show a system with no saturation point at all.
+
+Wrote results/latency/ticktotrade_2024-01-15.json

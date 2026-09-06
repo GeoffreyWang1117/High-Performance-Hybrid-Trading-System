@@ -45,6 +45,7 @@ extern bool run_context_contamination_tests();
 extern bool run_walk_forward_tests();
 extern bool run_freshness_tests();
 extern bool run_advisory_kind_tests();
+extern bool run_pipeline_latency_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -75,7 +76,8 @@ int main(int argc, char* argv[]) {
         {"Context Contamination", run_context_contamination_tests},
         {"Walk-Forward", run_walk_forward_tests},
         {"Freshness", run_freshness_tests},
-        {"Advisory Kind", run_advisory_kind_tests}
+        {"Advisory Kind", run_advisory_kind_tests},
+        {"Pipeline Latency", run_pipeline_latency_tests}
     };
 
     for (const auto& [name, test_func] : modules) {
