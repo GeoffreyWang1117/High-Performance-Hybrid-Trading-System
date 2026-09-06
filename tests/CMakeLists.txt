@@ -21,6 +21,7 @@ if(GTest_FOUND)
         test_statistics.cpp
         test_binance_dataset.cpp
         test_context_contamination.cpp
+        test_walk_forward.cpp
     )
 
     target_link_libraries(titans_tests
@@ -51,6 +52,7 @@ else()
         test_statistics.cpp
         test_binance_dataset.cpp
         test_context_contamination.cpp
+        test_walk_forward.cpp
     )
 
     target_link_libraries(titans_tests

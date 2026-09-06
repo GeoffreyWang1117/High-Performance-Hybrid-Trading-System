@@ -51,6 +51,7 @@
 #include "titans/bench/platform.hpp"
 #include "titans/context/binance_dataset.hpp"
 #include "titans/lanes/advisory.hpp"
+#include "titans/lanes/flow_policy.hpp"
 #include "titans/lanes/lane_bridge.hpp"
 #include "titans/lanes/latency_budget.hpp"
 
@@ -214,6 +215,11 @@ int main(int argc, char** argv) {
         int64_t lag_p50 = 0, lag_p99 = 0, lag_max = 0;
         double informedness = 0.0;
         double warn_threshold = 0.0;
+        /// Market-time age of the advisory at the moment it was acted on.
+        /// Not the same thing as expiry: an advisory can be well inside its
+        /// TTL and still describe a book state the horizon has moved past.
+        int64_t age_p50_ms = 0, age_p99_ms = 0, age_max_ms = 0;
+        uint64_t acted_with_advisory = 0;
     };
 
     bench::pin_to_cpu(opts.fast_core);
@@ -239,16 +245,26 @@ int main(int argc, char** argv) {
         // lane never waits on it.
         std::thread slow([&] {
             bench::pin_to_cpu(opts.slow_core);
-            std::deque<double> flow;
-            constexpr size_t kFlowWindow = 50;
+
+            // The decision rule itself lives in FlowPolicy, shared with
+            // titans_walkforward. Two copies of a rule drift, and then the
+            // out-of-sample number describes a policy that does not run here.
+            FlowPolicy::Config cfg;
+            cfg.window = 50;
+            cfg.contaminate = opts.contaminate;
+            FlowPolicy policy(cfg);
 
             // Calibration: hold fire until the distribution of |net flow| is
             // known, then warn above the configured quantile of it. Publishing
             // a stance before that would be warning against a threshold with
             // no meaning.
+            //
+            // Note where these samples come from: the first N observations of
+            // the SAME session this run is then scored on. That is causal, and
+            // it is still in-sample. titans_walkforward draws them from earlier
+            // DAYS instead, and reports the difference.
             std::vector<double> calib;
             calib.reserve(opts.calibration_n);
-            double warn_above = 0.0;
             bool calibrated = false;
 
             LaneObservation obs;
@@ -264,46 +280,47 @@ int main(int argc, char** argv) {
                 bool got = false;
                 while (bridge.poll(obs)) {
                     got = true;
-                    double sig = obs.imbalance;
-                    if (opts.contaminate) sig = -sig * 0.5;
-                    flow.push_back(sig);
-                    if (flow.size() > kFlowWindow) flow.pop_front();
+                    // Contamination, when enabled, is applied inside observe():
+                    // the slow lane's view of order flow is sign-flipped and
+                    // attenuated. Same class of fault as EntityBinding
+                    // contamination in the research framework, in the units
+                    // this lane consumes.
+                    policy.observe(obs.imbalance);
                 }
                 if (!got) {
                     std::this_thread::sleep_for(std::chrono::microseconds(20));
                     continue;
                 }
+                // Deciding on a partial window compares a short sum against a
+                // threshold calibrated on full ones.
+                if (!policy.warm()) continue;
 
-                // Contamination, when enabled, was applied as each observation
-                // entered the window: the slow lane's view of order flow is
-                // sign-flipped and attenuated. Same class of fault as
-                // EntityBinding contamination in the research framework, in the
-                // units this lane consumes.
-                const double net = std::accumulate(flow.begin(), flow.end(), 0.0);
+                FlowPolicy::Decision d = policy.decide();
 
                 if (!calibrated) {
-                    calib.push_back(std::abs(net));
+                    calib.push_back(std::abs(d.net));
                     if (calib.size() < opts.calibration_n) continue;
                     std::sort(calib.begin(), calib.end());
-                    warn_above = calib[std::min(
+                    const double warn_above = calib[std::min(
                         calib.size() - 1,
                         static_cast<size_t>(calib.size() * opts.toxic_flow_quantile))];
+                    policy.set_warn_above(warn_above);
                     calibrated = true;
                     calibrated_threshold.store(warn_above);
+                    d = policy.decide();
                 }
 
                 Advisory a;
-                a.stance = (std::abs(net) > warn_above)
-                               ? AdvisoryStance::RiskOff : AdvisoryStance::RiskOn;
-                a.size_multiplier = (a.stance == AdvisoryStance::RiskOff) ? 0.25f : 1.0f;
+                a.stance = d.risk_off ? AdvisoryStance::RiskOff
+                                      : AdvisoryStance::RiskOn;
+                a.size_multiplier = FlowPolicy::size_multiplier(d);
                 // Which side the pressure is on. Dropping this was a real bug:
                 // adverse selection is directional -- flow that has been buying
                 // makes the next AGGRESSIVE BUY dangerous, not the next sell --
                 // and an undirected advisory made the policy fire on both sides
                 // equally, cancelling its own signal.
-                a.risk_direction = static_cast<int8_t>(net > 0 ? 1 : (net < 0 ? -1 : 0));
-                a.confidence = static_cast<float>(
-                    std::min(1.0, warn_above > 0 ? std::abs(net) / (2.0 * warn_above) : 0.0));
+                a.risk_direction = d.direction;
+                a.confidence = d.confidence;
                 a.issued_at = obs.ingress_time;
                 a.valid_until = obs.ingress_time + opts.advisory_ttl_ms * 1000000LL;
                 a.context_generation = obs.context_generation;
@@ -339,6 +356,8 @@ int main(int argc, char** argv) {
         // the replay is in fact keeping up. Only the magnitude matters.
         std::vector<int64_t> lag_ns;
         lag_ns.reserve(n);
+        std::vector<int64_t> advisory_age_ns;
+        advisory_age_ns.reserve(n);
 
         for (size_t i = 0; i < n; ++i) {
             const auto& e = events[i];
@@ -367,6 +386,13 @@ int main(int argc, char** argv) {
             bridge.offer(obs);                   // wait-free; drops when full
 
             const Advisory a = view.current(e.timestamp, generation);
+            // How old is the advice, in the market's own clock? The TTL bounds
+            // this, but the bound is not the distribution: what matters for a
+            // 1000 ms toxic-flow horizon is where the age actually sits.
+            if (a.issued_at > 0 && e.timestamp >= a.issued_at) {
+                advisory_age_ns.push_back(
+                    static_cast<int64_t>(e.timestamp - a.issued_at));
+            }
             // Act only when the advisory's risk side matches this trade's
             // aggressor. An undirected reading fires on both sides and
             // cancels out; see Advisory::risk_direction.
@@ -409,6 +435,19 @@ int main(int argc, char** argv) {
         r.lag_p50 = pct(50);
         r.lag_p99 = pct(99);
         r.lag_max = lag_ns.empty() ? 0 : lag_ns.back();
+
+        std::sort(advisory_age_ns.begin(), advisory_age_ns.end());
+        auto age_ms = [&](double p) -> int64_t {
+            if (advisory_age_ns.empty()) return 0;
+            const auto idx = std::min(advisory_age_ns.size() - 1,
+                static_cast<size_t>(advisory_age_ns.size() * p / 100.0));
+            return advisory_age_ns[idx] / 1000000;
+        };
+        r.age_p50_ms = age_ms(50);
+        r.age_p99_ms = age_ms(99);
+        r.age_max_ms = advisory_age_ns.empty() ? 0
+                     : advisory_age_ns.back() / 1000000;
+        r.acted_with_advisory = advisory_age_ns.size();
 
         const uint64_t tox = outcome.avoided_toxic + outcome.missed_toxic;
         const uint64_t ben = outcome.forgone_benign + outcome.kept_benign;
@@ -475,6 +514,18 @@ int main(int argc, char** argv) {
                 "  rejected as expired or generation-stale %lu (%.1f%%)\n",
                 last.published, last.stale_reads, last.rejected,
                 n ? 100.0 * last.rejected / n : 0.0);
+
+    std::printf("\nAdvisory age when acted on, in MARKET time\n");
+    std::printf("  p50 %ld ms, p99 %ld ms, max %ld ms, over %lu reads\n",
+                static_cast<long>(last.age_p50_ms),
+                static_cast<long>(last.age_p99_ms),
+                static_cast<long>(last.age_max_ms),
+                last.acted_with_advisory);
+    std::printf("  Against a %ld ms toxic-flow horizon. This is the quantity\n"
+                "  the TTL bounds but does not describe: advice can sit well\n"
+                "  inside its lifetime and still refer to a book the horizon\n"
+                "  has already moved past.\n",
+                static_cast<long>(opts.horizon_ms));
 
     std::printf("\nAdverse selection (labels from what the price did next)\n");
     const uint64_t tox = last.outcome.avoided_toxic + last.outcome.missed_toxic;

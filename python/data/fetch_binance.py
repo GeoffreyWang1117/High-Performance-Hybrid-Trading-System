@@ -14,11 +14,19 @@ a hard failure rather than a warning.
 Usage:
     python fetch_binance.py --symbol BTCUSDT --month 2024-01
     python fetch_binance.py --symbol ETHUSDT --date 2024-01-15 --out data/raw
+    python fetch_binance.py --symbol BTCUSDT --dates 2024-01-08:2024-02-04
+
+A walk-forward evaluation needs a contiguous run of days, not one. `--dates`
+downloads a closed interval, skipping days already present, and stops on the
+first day the archive does not exist rather than leaving a hole in the middle
+of the series -- a gap would silently turn an expanding window into a
+discontinuous one.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import hashlib
 import sys
 import urllib.error
@@ -150,6 +158,20 @@ def _write_manifest(csv_path: Path, symbol: str, period: str,
     print(f"  manifest:  {manifest} ({lines} rows)")
 
 
+def _date_range(spec: str) -> list[str]:
+    """Expand "YYYY-MM-DD:YYYY-MM-DD" into an inclusive list of days."""
+    try:
+        lo_s, hi_s = spec.split(":", 1)
+        lo = _dt.date.fromisoformat(lo_s)
+        hi = _dt.date.fromisoformat(hi_s)
+    except ValueError as e:
+        raise SystemExit(f"--dates wants YYYY-MM-DD:YYYY-MM-DD, got {spec!r} ({e})")
+    if hi < lo:
+        raise SystemExit(f"--dates range runs backwards: {lo} to {hi}")
+    n = (hi - lo).days + 1
+    return [(lo + _dt.timedelta(days=i)).isoformat() for i in range(n)]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -157,9 +179,25 @@ def main() -> None:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--month", help="YYYY-MM (monthly archive)")
     g.add_argument("--date", help="YYYY-MM-DD (daily archive)")
+    g.add_argument("--dates", metavar="START:END",
+                   help="inclusive YYYY-MM-DD:YYYY-MM-DD range of daily archives")
     ap.add_argument("--out", default="data/raw", type=Path)
     ap.add_argument("--keep-zip", action="store_true")
     args = ap.parse_args()
+
+    if args.dates:
+        days = _date_range(args.dates)
+        print(f"Fetching {args.symbol} aggTrades for {len(days)} days "
+              f"({days[0]} .. {days[-1]})")
+        paths = []
+        for i, day in enumerate(days, 1):
+            print(f"\n[{i}/{len(days)}] {day}")
+            paths.append(fetch(args.symbol, day, args.out, args.keep_zip))
+        total_mb = sum(p.stat().st_size for p in paths) / 1e6
+        print(f"\nReady: {len(paths)} files, {total_mb:.0f} MB in {args.out}")
+        print("Walk-forward over them with:")
+        print(f"  ./build/titans_walkforward {args.out}/{args.symbol}-aggTrades-*.csv")
+        return
 
     period = args.month or args.date
     print(f"Fetching {args.symbol} aggTrades for {period}")

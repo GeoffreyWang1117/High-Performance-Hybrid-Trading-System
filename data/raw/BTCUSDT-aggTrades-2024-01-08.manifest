@@ -1,0 +1,6 @@
+symbol=BTCUSDT
+period=2024-01-08
+source_url=https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-08.zip
+archive_sha256=61651eaa5dd673618372a590cd22b4bb5590e510920a064321a3b62cb3e586ed
+rows=1850031
+columns=agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker,is_best_match

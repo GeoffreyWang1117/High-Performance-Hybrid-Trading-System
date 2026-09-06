@@ -10,6 +10,7 @@
 # Usage:
 #   scripts/reproduce.sh              # everything that needs no network or GPU
 #   scripts/reproduce.sh --with-data  # also download real market data (~18 MB)
+#   scripts/reproduce.sh --with-walkforward   # 28 days of data (~2.8 GB), ~8 min
 #   scripts/reproduce.sh --with-llm   # also run the live-model experiment
 #
 # Exit code is the number of stages that failed.
@@ -23,14 +24,17 @@ BUILD_DIR="${BUILD_DIR:-build}"
 RESULTS_DIR="${RESULTS_DIR:-results}"
 WITH_DATA=0
 WITH_LLM=0
+WITH_WF=0
 LLM_PORT="${LLM_PORT:-8000}"
 LLM_MODEL="${LLM_MODEL:-}"
 DATA_DATE="${DATA_DATE:-2024-01-15}"
 SYMBOL="${SYMBOL:-BTCUSDT}"
+WF_RANGE="${WF_RANGE:-2024-01-08:2024-02-04}"
 
 for arg in "$@"; do
   case "$arg" in
     --with-data) WITH_DATA=1 ;;
+    --with-walkforward) WITH_WF=1 ;;
     --with-llm)  WITH_LLM=1; WITH_DATA=1 ;;
     --help|-h)
       sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -158,6 +162,33 @@ stage "Real market data (README leakage audit)"
 fi
 
 # ---------------------------------------------------------------------------
+if [ "$WITH_WF" -eq 1 ]; then
+stage "Walk-forward (README: out-of-sample policy evaluation)"
+# ---------------------------------------------------------------------------
+  echo "  fetching $WF_RANGE -- about 2.8 GB, skipped where already present"
+  python3 python/data/fetch_binance.py --symbol "$SYMBOL" --dates "$WF_RANGE" \
+      --out data/raw > /tmp/titans_wf_fetch.out 2>&1
+  check "fetch + sha256 verify every day in the range" test $? -eq 0
+  grep -cE 'sha256 verified|already present' /tmp/titans_wf_fetch.out \
+      | sed 's/^/  days available: /'
+
+  mkdir -p "$RESULTS_DIR/walkforward"
+  WF_JSON="$RESULTS_DIR/walkforward/${SYMBOL}_$(echo "$WF_RANGE" | tr ':' '_').json"
+  # shellcheck disable=SC2086
+  "$BUILD_DIR"/titans_walkforward data/raw/${SYMBOL}-aggTrades-*.csv \
+      --json "$WF_JSON" > /tmp/titans_wf.out 2>&1
+  WF_EXIT=$?
+  check "walk-forward ran without a protocol violation" test $WF_EXIT -eq 0
+  sed -n '/LABEL AUDIT/,$p' /tmp/titans_wf.out | sed 's/^/  /'
+  echo
+  echo "  NOTE: the out-of-sample number here is measured WITHOUT advisory"
+  echo "  staleness, so it is an upper bound on what the live lane can reach."
+  echo "  titans_lanes measures the same policy with staleness and does not"
+  echo "  resolve it. The gap between the two is the cost of delivery, and it"
+  echo "  is the most interesting number this repository produces."
+fi
+
+# ---------------------------------------------------------------------------
 if [ "$WITH_LLM" -eq 1 ]; then
 stage "Live-model contamination experiment"
 # ---------------------------------------------------------------------------
@@ -193,6 +224,9 @@ else
 fi
 if [ "$WITH_DATA" -eq 0 ]; then
   echo "  (market-data and lane-replay stages skipped; pass --with-data)"
+fi
+if [ "$WITH_WF" -eq 0 ]; then
+  echo "  (walk-forward stage skipped; pass --with-walkforward -- 2.8 GB, ~8 min)"
 fi
 if [ "$WITH_LLM" -eq 0 ]; then
   echo "  (live-model stage skipped; pass --with-llm)"

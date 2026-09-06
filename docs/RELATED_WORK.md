@@ -112,10 +112,13 @@ does not need a classifier; it needs a clock and a generation counter.
    an architectural answer, and they cost nothing at runtime — unlike a detector,
    which is itself an inference.
 
-4. **The negative results shipped.** Three of them: the lane policy's
-   `NOT RESOLVED` verdict, the `INERT` ablation, and the degenerate-classifier
-   gate that exits 3 rather than reporting deltas from a model that answers the
-   same thing every time. Publication incentives select against all three.
+4. **The negative results shipped.** The lane policy's `NOT RESOLVED` verdict,
+   the `INERT` ablation, the degenerate-classifier gate that exits 3 rather than
+   reporting deltas from a model that answers the same thing every time, and a
+   drift-correction sweep that tested a plausible fix at four window sizes and
+   reports that none of them worked. Publication incentives select against all
+   of these; the first one is also what eventually located a real defect,
+   because a null result that is kept stays available to be explained later.
 
 **Bottom line.** The research contribution is small. The engineering
 contribution is that every claim in this repository can be falsified by running
@@ -127,8 +130,15 @@ and it is not what the surveyed field is currently rewarding.
 
 - A non-degenerate live-model result on the contamination task (needs a model
   larger than the hardware here could host — see the Known Limitations).
-- A slow-lane policy that measurably reduces adverse selection. The toy
-  order-flow policy does not, and the tool says so.
+- ~~A slow-lane policy that measurably reduces adverse selection.~~ **Done, and
+  it changed the verdict.** A 28-day walk-forward puts the order-flow policy at
+  +0.1676 informedness out of sample, 95% CI [+0.1385, +0.1966], on days its
+  threshold never saw. The earlier "no measurable effect" was a statement about
+  the delivery path, not the rule: the advisory the fast lane acts on has a
+  median age of 82 ms and a p99 of 1507 ms against a 1000 ms prediction horizon.
+  That makes the interesting open question a systems question -- what publish
+  cadence a slow lane needs relative to the horizon it is predicting over --
+  rather than a modelling one.
 - Running HFTBench's task through this system's lanes, which would connect the
   model-level latency-quality curve to a system-level isolation measurement.
   That is the most interesting unbuilt thing here.

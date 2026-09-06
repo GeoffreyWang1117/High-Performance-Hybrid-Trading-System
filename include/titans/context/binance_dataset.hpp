@@ -38,6 +38,7 @@
 #include "../core/types.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -90,6 +91,29 @@ struct ToxicFlowLabelConfig {
      * the future.
      */
     bool drift_adjust = true;
+
+    /**
+     * @brief Width of the window the drift estimate is taken over, in ms.
+     *
+     * 0 uses the whole session's mean, which is what a single-day evaluation
+     * did and what every published number here was built on. A walk-forward
+     * over 28 days showed why that is not enough: on 3 of them the aggressor
+     * side still cleared the leakage limit after correction, worst 0.157 AUC
+     * deviation on 2024-01-23. A session mean removes the day's average trend
+     * and leaves the intraday trend standing, so on a day that fell hard in
+     * one session and recovered in another, one side of the book stays
+     * predictive.
+     *
+     * A positive value estimates drift over a window centred on each trade
+     * instead. Centring is legitimate here for the same reason the horizon is:
+     * this constructs the TARGET, and a target may use the future. The
+     * predictor may not, and does not.
+     *
+     * This is the same correction the density literature arrives at from the
+     * other direction -- a score normalised within a rolling window survives
+     * regime change where a globally-normalised one does not.
+     */
+    int64_t drift_window_ms = 0;
 };
 
 struct DatasetStats {
@@ -105,6 +129,13 @@ struct DatasetStats {
     /// move when drift_adjust is on; reported so the size of the correction
     /// is visible rather than hidden.
     double drift_bps = 0.0;
+    /// Spread of the per-trade drift estimate, max minus min, in bps. Zero
+    /// when a single session mean is used. Large values are the whole reason
+    /// a single session mean is not enough: they say how much the trend the
+    /// correction is removing varies within the day.
+    double drift_spread_bps = 0.0;
+    /// Width of the drift window actually used, in ms. 0 = whole session.
+    int64_t drift_window_ms = 0;
 
     void print() const {
         std::printf("  trades:        %zu\n", total_trades);
@@ -116,8 +147,15 @@ struct DatasetStats {
         std::printf("  span:          %ld ms\n",
                     static_cast<long>(last_time_ms - first_time_ms));
         std::printf("  price range:   %.2f - %.2f\n", min_price, max_price);
-        std::printf("  session drift: %+.3f bps per horizon (removed from the "
-                    "label)\n", drift_bps);
+        if (drift_window_ms > 0) {
+            std::printf("  drift:         %+.3f bps mean, spread %.3f bps, "
+                        "estimated over a %ld ms rolling window\n",
+                        drift_bps, drift_spread_bps,
+                        static_cast<long>(drift_window_ms));
+        } else {
+            std::printf("  session drift: %+.3f bps per horizon (removed from "
+                        "the label; single session mean)\n", drift_bps);
+        }
     }
 };
 
@@ -193,8 +231,45 @@ public:
      * negatives at the end of every run.
      */
     std::vector<SyntheticEvent> build_events() {
+        const auto labels = build_labels();
+
         std::vector<SyntheticEvent> events;
-        events.reserve(trades_.size());
+        events.reserve(stats_.labelled);
+        for (std::size_t i = 0; i < trades_.size(); ++i) {
+            if (labels[i] < 0) continue;          // no full horizon
+            const auto& t = trades_[i];
+
+            SyntheticEvent e;
+            e.event_id = "agg_" + std::to_string(t.agg_trade_id);
+            e.entity_id = entity_of(t);
+            e.timestamp = t.transact_time_ms * 1000000LL;   // ms -> ns
+            // Category carries the aggressor side, which is a real market fact
+            // available at decision time. It is NOT the label: whether the
+            // price subsequently runs is exactly what has to be predicted.
+            e.event_type = t.is_buyer_maker ? "aggressive_sell" : "aggressive_buy";
+            e.value = t.price;
+            e.is_anomaly = labels[i] > 0;
+            events.push_back(std::move(e));
+        }
+        return events;
+    }
+
+    /**
+     * @brief One label per trade, aligned index-for-index with trades().
+     *
+     * @return +1 toxic, 0 benign, -1 for a trade with no full horizon ahead of
+     *         it. Those are DROPPED by every consumer rather than labelled
+     *         negative, which would append a block of guaranteed negatives to
+     *         the end of each run.
+     *
+     * build_events() is written in terms of this, so a consumer that scores
+     * against labels (titans_walkforward) and one that scores against events
+     * (titans_lanes) cannot end up disagreeing about which trades were toxic.
+     * They previously could: the alignment between the two was recovered by
+     * matching stringified trade ids.
+     */
+    std::vector<int8_t> build_labels() {
+        std::vector<int8_t> labels(trades_.size(), static_cast<int8_t>(-1));
 
         stats_ = DatasetStats{};
         stats_.total_trades = trades_.size();
@@ -212,15 +287,23 @@ public:
         // centres aggressive buys and sells on the same expectation, so the
         // label reflects trade-specific information rather than which way the
         // market happened to go.
-        double drift_bps = 0.0;
+        std::vector<double> drift(trades_.size(), 0.0);
         if (config_.drift_adjust) {
             double sum = 0.0;
             size_t n = 0;
             for (const auto& fr : forward) {
                 if (fr.valid) { sum += fr.return_bps; ++n; }
             }
-            drift_bps = n ? sum / static_cast<double>(n) : 0.0;
-            stats_.drift_bps = drift_bps;
+            const double session_mean = n ? sum / static_cast<double>(n) : 0.0;
+
+            if (config_.drift_window_ms <= 0) {
+                std::fill(drift.begin(), drift.end(), session_mean);
+                stats_.drift_bps = session_mean;
+                stats_.drift_spread_bps = 0.0;
+            } else {
+                compute_rolling_drift(forward, session_mean, drift);
+            }
+            stats_.drift_window_ms = config_.drift_window_ms;
         }
 
         // Pass 2: threshold the drift-adjusted, aggressor-signed move.
@@ -232,28 +315,17 @@ public:
             if (!forward[i].valid) continue;   // no full horizon
 
             const double signed_move_bps =
-                t.aggressor_sign() * (forward[i].return_bps - drift_bps);
+                t.aggressor_sign() * (forward[i].return_bps - drift[i]);
             const bool toxic = signed_move_bps >= config_.threshold_bps;
 
-            SyntheticEvent e;
-            e.event_id = "agg_" + std::to_string(t.agg_trade_id);
-            e.entity_id = entity_of(t);
-            e.timestamp = t.transact_time_ms * 1000000LL;   // ms -> ns
-            e.value = t.price;
-            // Category carries the aggressor side, which is a real market fact
-            // available at decision time. It is NOT the label: whether the
-            // price subsequently runs is exactly what has to be predicted.
-            e.event_type = t.is_buyer_maker ? "aggressive_sell" : "aggressive_buy";
-            e.is_anomaly = toxic;
-
-            events.push_back(std::move(e));
+            labels[i] = static_cast<int8_t>(toxic ? 1 : 0);
             ++stats_.labelled;
             if (toxic) ++stats_.toxic;
         }
 
         stats_.toxic_rate = stats_.labelled
             ? static_cast<double>(stats_.toxic) / stats_.labelled : 0.0;
-        return events;
+        return labels;
     }
 
     const DatasetStats& stats() const { return stats_; }
@@ -308,6 +380,51 @@ private:
             out[i].valid = true;
         }
         return out;
+    }
+
+    /**
+     * @brief Mean forward return over a window centred on each trade.
+     *
+     * Prefix sums plus two monotone pointers, so the whole pass is O(n) rather
+     * than O(n * window). A trade whose window contains no other trade with a
+     * valid forward return falls back to the session mean, which is the only
+     * estimate available there; that happens only in the sparse tail.
+     */
+    void compute_rolling_drift(const std::vector<ForwardReturn>& forward,
+                               double session_mean,
+                               std::vector<double>& drift) {
+        const size_t n = trades_.size();
+        std::vector<double> psum(n + 1, 0.0);
+        std::vector<size_t> pcnt(n + 1, 0);
+        for (size_t i = 0; i < n; ++i) {
+            psum[i + 1] = psum[i] + (forward[i].valid ? forward[i].return_bps : 0.0);
+            pcnt[i + 1] = pcnt[i] + (forward[i].valid ? 1u : 0u);
+        }
+
+        const Timestamp half = config_.drift_window_ms / 2;
+        size_t lo = 0, hi = 0;
+        double dmin = 0.0, dmax = 0.0;
+        bool first = true;
+        double dsum = 0.0;
+        size_t dcount = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            const Timestamp t = trades_[i].transact_time_ms;
+            while (lo < n && trades_[lo].transact_time_ms < t - half) ++lo;
+            if (hi < lo) hi = lo;
+            while (hi < n && trades_[hi].transact_time_ms <= t + half) ++hi;
+
+            const size_t cnt = pcnt[hi] - pcnt[lo];
+            drift[i] = cnt ? (psum[hi] - psum[lo]) / static_cast<double>(cnt)
+                           : session_mean;
+            if (!forward[i].valid) continue;
+            if (first) { dmin = dmax = drift[i]; first = false; }
+            else { dmin = std::min(dmin, drift[i]); dmax = std::max(dmax, drift[i]); }
+            dsum += drift[i];
+            ++dcount;
+        }
+        stats_.drift_bps = dcount ? dsum / static_cast<double>(dcount) : session_mean;
+        stats_.drift_spread_bps = dcount ? dmax - dmin : 0.0;
     }
 
     std::string entity_of(const AggTrade& t) const {

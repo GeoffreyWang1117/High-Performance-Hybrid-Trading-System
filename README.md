@@ -337,11 +337,12 @@ fallback would otherwise look like success.
 | `titans_benchmark` | Fast-path latency, with a methodology self-check |
 | `titans_dataset` | Label real trades and audit for leakage |
 | `titans_lanes` | Replay real trades through both lanes, end to end |
+| `titans_walkforward` | Out-of-sample policy evaluation across many days |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 12 modules including lane isolation and task design |
+| `titans_tests` | 13 modules including lane isolation, task design, and the walk-forward protocol |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -394,33 +395,145 @@ version of this experiment but a different one, and the first version of this
 program proved it: the fast lane finished 5.2 hours of tape in tens of
 milliseconds and 97% of advisories were rejected as expired.
 
-**The tool declines to score the policy, and that is the honest result:**
+**The tool declines to score the policy:**
 
 ```
-  run 1/5 ... informedness +0.0277      Informedness (TPR - FPR) across 5 runs
-  run 2/5 ... informedness -0.0039        median -0.0039, range [-0.0172, +0.0614]
-  run 3/5 ... informedness -0.0172        sd 0.0328
-  run 4/5 ... informedness -0.0110
-  run 5/5 ... informedness +0.0614      VERDICT: NOT RESOLVED
+Informedness (TPR - FPR) across 5 runs
+  median +0.0171, range [-0.0084, +0.0592], sd 0.0251
+VERDICT: NOT RESOLVED
 ```
 
 The median sits inside two standard deviations of the run-to-run spread, so this
-configuration measures thread scheduling rather than the policy. Earlier
-configurations produced medians as high as +0.14 — an artefact, because the
-advisory was stale and rejected most of the time so the policy barely fired.
-Driving the rejection rate down to 6% collapsed the number to +0.013 ± 0.020.
+configuration does not measure the policy.
 
-So the toy order-flow slow lane does not measurably reduce adverse selection at
-this decision point. Turning knobs until a positive number appeared is the exact
-failure mode the rest of this repository exists to prevent, so the knobs stopped
-turning.
+For a long time the reading was "the toy order-flow policy has no value". That
+was wrong, and the walk-forward below is what showed it: the same rule, on the
+same 100 000 trades, with the same threshold, scores **+0.19** when it is
+evaluated without the lane machinery. The policy works. What does not work is
+getting the advice there in time.
+
+Three measurements narrow that down, and the first two are dead ends worth
+recording:
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| Advisories expire before use | raise `--ttl-ms` 250 → 60 000 | rejection 34.4% → 10.9%, informedness stays flat (−0.012, +0.017, −0.004, +0.013) |
+| The bridge sheds observations | read `dropped` | 0 of 99 972. Nothing is shed at this rate |
+| The advice is simply **old** | measure advisory age in market time | **p50 82 ms, p99 1507 ms, max 4418 ms — against a 1000 ms horizon** |
+
+That last row is the answer, and it is the one the TTL knob does not control:
+
+```
+Advisory age when acted on, in MARKET time
+  p50 82 ms, p99 1507 ms, max 4418 ms, over 88998 reads
+```
+
+An advisory can be far inside a 60-second lifetime and still describe a book
+state the prediction horizon has already moved past. One read in a hundred acts
+on advice older than the entire horizon it is predicting over. **The TTL bounds
+the wrong quantity** — the design's freshness knob is calibrated against wall
+latency, when what matters is age relative to the prediction horizon.
+
+So the honest statement is now sharper than "no effect": a slow lane that
+publishes at this cadence cannot deliver a signal with a one-second horizon,
+and the fix is a design change rather than a tuning pass.
 
 What **is** measured: the fast-lane stage costs 254 ns mean against a 500 ns
-budget; the bridge drops nothing at this rate; pacing lag runs four orders of
-magnitude below the advisory lifetime; and stale advisories are rejected rather
-than acted on.
+budget; the bridge drops nothing at this rate; and pacing lag runs four orders
+of magnitude below the advisory lifetime.
 
 ---
+
+---
+
+## Out-of-sample: 28 days, and a threshold that never saw its test day
+
+Everything above came from one day, and the policy's threshold was calibrated on
+the first 5000 observations of the same day it was then scored on. Both are
+defensible in isolation and together they cannot answer the only question that
+matters for a decision rule: does it work on a day it has never seen.
+
+```bash
+python python/data/fetch_binance.py --symbol BTCUSDT --dates 2024-01-08:2024-02-04
+./build/titans_walkforward data/raw/BTCUSDT-aggTrades-2024-0*.csv --json results/wf.json
+```
+
+For each day *t*, fit on days `[0, t)` and test on day *t*. Day *t* contributes
+nothing to its own threshold, and the run is refused outright if any fold's
+training data reaches past its test day's first trade — checked on timestamps,
+because argument order is a claim and a timestamp is evidence.
+
+```
+INFORMEDNESS (TPR - FPR) ACROSS 27 FOLDS
+  out-of-sample              +0.1676  95% CI [+0.1385, +0.1966]
+  in-sample (counterfactual) +0.1725  95% CI [+0.1402, +0.2067]
+  in-sample minus OOS        +0.0049  95% CI [-0.0032, +0.0144]
+  sign-flip test vs zero     p < 5e-05
+
+VERDICT
+  RESOLVED. The out-of-sample 95% interval [+0.1385, +0.1966]
+  excludes zero across 27 days the threshold never saw.
+```
+
+Two things in that block are worth more than the headline.
+
+**The in-sample arm is reported next to it, on purpose.** Fitting the threshold
+on the test day itself buys only +0.0049, and the interval on that gap contains
+zero. So the single-day number was not inflated by in-sample calibration — a
+result that could easily have gone the other way, and one that only exists
+because both arms were run.
+
+**This is an upper bound, not a live-lane number.** It removes the lane
+machinery: no threads, no advisory expiry, decision taken from the window ending
+at the previous trade. `titans_lanes` measures the same policy with the
+machinery and does not resolve it. The gap between +0.17 here and ~0 there is
+the cost of delivery, and the advisory-age distribution above is what it is made
+of.
+
+### Two null results from this run
+
+Both are recorded because a knob that did not help is worth exactly as much as
+one that did, and only one of them normally gets written down.
+
+**Three of 28 days fail the label audit** — the aggressor side reaches AUC
+deviation 0.157 on 2024-01-23, past the 0.10 limit. The hypothesis was intraday
+trend: a session-mean drift correction removes the day's average and leaves the
+local trend standing. A rolling estimate should fix it. It does not, at any
+window tested:
+
+| Drift estimate | Days failing the audit | Out-of-sample informedness |
+|---|---|---|
+| 1 min rolling | 6 | +0.1515 |
+| 5 min rolling | 5 | +0.1612 |
+| 30 min rolling | 3 | +0.1672 |
+| 2 h rolling | 3 | +0.1679 |
+| **session mean (default)** | **3** | **+0.1676** |
+
+Short windows are worse (estimation noise), long ones converge back to the
+session mean. The mechanism is implemented and unit-tested — on a fixture that
+rises then falls, it takes the toxic set from 60% one-sided to balanced — so the
+estimator works and the *hypothesis* is wrong. Something other than intraday
+trend makes those three days leak, and it is not yet known what. The default
+stays at the session mean and the three days stand as a known defect.
+
+**The effect does not depend on those days.** Dropping them leaves 24 folds at
++0.1528, 95% CI [+0.1253, +0.1797]. That is a post-hoc subset and is reported
+below the headline as a sensitivity bound, never in place of it.
+
+### What the numbers rest on
+
+`titans_walkforward` refuses rather than reports when it cannot support a
+number: fewer than 5 folds gets no bootstrap interval at all, a non-causal fold
+aborts the run with exit 3, and a policy that took the same action on every
+trade exits 4 rather than presenting a structural zero as a null result. The
+permutation p-value uses the add-one estimator, so it cannot print 0 — the run
+above prints `p < 5e-05`, the smallest value 20 000 sign assignments can
+resolve.
+
+The interval itself is checked rather than trusted: `tests/test_walk_forward.cpp`
+runs 300 synthetic trials and asserts the nominal 95% interval covers the true
+mean between 85% and 99% of the time (it measures 93.0% at n=20, which is the
+known under-coverage of a percentile bootstrap at that size).
 
 ---
 
@@ -483,9 +596,10 @@ include/titans/trading/       L2/L3 order book, matching, risk, shadow engine
 include/titans/market_data/   feed handling, binary logging, replay
 include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, budgets
 include/titans/bench/         measurement: TSC timing, noise floor, machine fingerprint
+include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 12 test modules
+src/, examples/, tests/       binaries, experiment drivers, 13 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results
@@ -528,6 +642,12 @@ conda create -n titans -c conda-forge python=3.11 numpy pandas scipy \
 - **CUDA kernels are not yet covered by the measurement rewrite.**
 - **LLM experiment scale depends on available hardware.** The program warns
   below 200 events per arm and declines to present small deltas as effects.
+- **Three of 28 days fail the label audit and it is not understood why.** The
+  intraday-trend hypothesis was tested and rejected (see the drift sweep above).
+  The headline is reported over all days with a sensitivity bound.
+- **The out-of-sample number is an upper bound.** It is measured without
+  advisory staleness. What the live lane achieves through the fast/slow
+  boundary is a different and currently much smaller number.
 
 ## License
 

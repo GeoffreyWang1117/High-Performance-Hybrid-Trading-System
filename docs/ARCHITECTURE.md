@@ -200,12 +200,13 @@ Two rules govern that code, both enforced by tests:
 | `include/titans/market_data/` | Feed handling, binary logging, replay |
 | `include/titans/lanes/` | **Fast/slow boundary**: advisory slot, bridge, budgets |
 | `include/titans/bench/` | **Measurement**: TSC timing, noise floor, fingerprint |
+| `include/titans/eval/` | **Out-of-sample evaluation**: walk-forward folds, bootstrap CIs, permutation tests |
 | `include/titans/context/` | Research framework: versioned context, contamination, LLM backends, Binance dataset |
 | `include/titans/cuda/` | GPU kernels for rolling statistics and alpha factors |
 | `python/data/` | Binance archive fetch with checksum verification |
 | `python/serving/` | CPU inference shim (OpenAI-compatible) for CI and GPU-less hosts |
 | `python/research/` | Figure generation, strictly from measured results |
-| `tests/` | 12 modules; lane isolation and task design are the load-bearing ones |
+| `tests/` | 13 modules; lane isolation, task design, and the walk-forward protocol are the load-bearing ones |
 | `scripts/reproduce.sh` | Re-derives every number in the README, exits with the failure count |
 
 ## How this compares to published systems
@@ -215,6 +216,34 @@ standard practice rather than a contribution, and the contamination taxonomy is
 covered in more depth by the agent-memory security literature. What did not turn
 up in that search is an *executed* isolation claim — a test that hangs the slow
 lane and measures whether the fast path moves.
+
+## Advisory age is the binding constraint, not the TTL
+
+`Advisory` carries `valid_until`, and the fast lane refuses advice past it. That
+bounds how stale acted-on advice can be, and it is not the quantity that
+matters.
+
+Measured over 100 000 BTCUSDT trades with a 60-second TTL -- so wide that almost
+nothing expires -- the age of the advisory at the moment the fast lane acted on
+it was **p50 82 ms, p99 1507 ms, max 4418 ms**, against a 1000 ms toxic-flow
+prediction horizon. One read in a hundred acted on advice older than the entire
+horizon it was predicting over, while being comfortably inside its declared
+lifetime.
+
+Raising the TTL from 250 ms to 60 s cut the rejection rate from 34.4% to 10.9%
+and did not move the outcome at all. The same policy scores +0.19 informedness
+on the same trades when the lane machinery is removed
+(`titans_walkforward`), and roughly zero through it.
+
+So the freshness knob this design exposes is calibrated against the wrong
+reference. What a slow lane needs is a publish cadence fast relative to the
+PREDICTION HORIZON of the signal it carries; `valid_until` expresses a latency
+budget instead. The two coincide only by accident.
+
+This is stated here rather than fixed because the fix is a design change --
+either the advisory declares the horizon it is valid for and the fast lane
+rejects on age rather than on expiry, or the slow lane's cadence becomes a
+contract term with its own budget and violation count.
 
 ## Known limitations
 
