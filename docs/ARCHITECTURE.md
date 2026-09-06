@@ -201,12 +201,13 @@ Two rules govern that code, both enforced by tests:
 | `include/titans/lanes/` | **Fast/slow boundary**: advisory slot, bridge, budgets |
 | `include/titans/bench/` | **Measurement**: TSC timing, noise floor, fingerprint |
 | `include/titans/eval/` | **Out-of-sample evaluation**: walk-forward folds, bootstrap CIs, permutation tests |
+| `include/titans/bench/histogram.hpp` | Fixed-layout latency histogram with a coordinated-omission correction |
 | `include/titans/context/` | Research framework: versioned context, contamination, LLM backends, Binance dataset |
 | `include/titans/cuda/` | GPU kernels for rolling statistics and alpha factors |
 | `python/data/` | Binance archive fetch with checksum verification |
 | `python/serving/` | CPU inference shim (OpenAI-compatible) for CI and GPU-less hosts |
 | `python/research/` | Figure generation, strictly from measured results |
-| `tests/` | 13 modules; lane isolation, task design, and the walk-forward protocol are the load-bearing ones |
+| `tests/` | 15 modules; lane isolation, task design, the walk-forward protocol, and the freshness contract are the load-bearing ones |
 | `scripts/reproduce.sh` | Re-derives every number in the README, exits with the failure count |
 
 ## How this compares to published systems
@@ -216,6 +217,25 @@ standard practice rather than a contribution, and the contamination taxonomy is
 covered in more depth by the agent-memory security literature. What did not turn
 up in that search is an *executed* isolation claim — a test that hangs the slow
 lane and measures whether the fast path moves.
+
+## What the slow lane ships decides how fast it goes stale
+
+**Resolved; the full account is in [FRESHNESS.md](FRESHNESS.md).** The section
+below records the measurement that opened the question. Its conclusion --
+"advisory age is the binding constraint" -- turned out to be the wrong half of
+the answer: age was worth measuring, and gating on it bought nothing.
+
+The mechanism is misalignment, not staleness. A threshold *crossing* is only
+correct at the instant it is taken, and the median advisory was three trades
+old, so the lane acted at nearly the right rate on 40.1% of the right trades. No
+expiry rule and no age gate can move an action back to where it belonged.
+
+So the slow lane now ships the calibrated threshold and the fast lane evaluates
+the rule against its own current window: agreement 40.1% -> 89.8%, informedness
+from an unresolved -0.0102 to a resolved +0.2426, run-to-run spread 0.0255 ->
+0.0028. Each payload declares the horizon of what it carries -- 1000 ms for a
+decision, 789 s for a threshold estimated over that much market -- so the same
+delivery path fails the contract shipping one and meets it shipping the other.
 
 ## Advisory age is the binding constraint, not the TTL
 
@@ -240,10 +260,9 @@ reference. What a slow lane needs is a publish cadence fast relative to the
 PREDICTION HORIZON of the signal it carries; `valid_until` expresses a latency
 budget instead. The two coincide only by accident.
 
-This is stated here rather than fixed because the fix is a design change --
-either the advisory declares the horizon it is valid for and the fast lane
-rejects on age rather than on expiry, or the slow lane's cadence becomes a
-contract term with its own budget and violation count.
+Both of the fixes guessed at here were built. The advisory does now declare its
+horizon and the fast lane can reject on age; the cadence is a budget with a
+violation count. Neither recovered the signal, and the reason is above.
 
 ## Known limitations
 

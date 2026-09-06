@@ -13,7 +13,28 @@ the numbers say they would not help yet.
 
 ## P0 — Freshness SLO: make advisory age a contract term
 
-**Status: designed, not built. This is the highest-value item in the repo.**
+**Status: DONE. Full account in [FRESHNESS.md](FRESHNESS.md).**
+
+The hypothesis in this item was half right and the useful half was not the half
+stated. Advisory age *was* the thing to measure, and gating on it bought
+nothing: the gate was built, swept at five settings, and the outcome did not
+move at any of them. The instrument that came out of building it — comparing
+the delivered decision against the ideal one trade by trade — showed the lane
+acting at nearly the right rate on only 40.1% of the right trades. A threshold
+crossing is a moment, and the median advisory was three trades old.
+
+The fix was to change what the lane ships. `Advisory::parameter` carries the
+calibrated threshold and the fast lane evaluates the rule itself; agreement went
+40.1% -> 89.8%, informedness from an unresolved median of -0.0102 to a resolved
++0.2426, and run-to-run spread from 0.0255 to 0.0028. Each payload declares its
+own horizon, so the same delivery path breaches the contract shipping a decision
+and meets it shipping a parameter. Both are asserted in `scripts/reproduce.sh`.
+
+The original text follows, unedited, because the gate it proposed is the part
+that did not work.
+
+---
+
 
 ### What the measurement says
 

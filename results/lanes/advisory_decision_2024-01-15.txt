@@ -1,0 +1,123 @@
+Loading data/raw/BTCUSDT-aggTrades-2024-01-15.csv
+
+Dataset
+  trades:        100000
+  labelled:      99972 (100.0% -- the tail lacks a full horizon and is dropped)
+  toxic:         900 (0.90% of labelled)
+  span:          8466691 ms
+  price range:   41718.05 - 42398.73
+  session drift: +0.071 bps per horizon (removed from the label; single session mean)
+
+Reference (same policy, no delivery path): informedness +0.1582, acts on 3.32% of trades
+  threshold |net| > 5.9394, from the first 5000 per-TRADE samples.
+  The slow lane calibrates from per-PUBLISH samples, so the two thresholds
+  differ slightly and the LEVELS below are not directly comparable to this.
+  What is comparable is the agreement rate, and the decision-vs-parameter
+  comparison, which share a threshold to four significant figures.
+
+Replaying 99972 trades at 500x real time (~16.9 s per run, 5 runs)
+  run 1/5 ... informedness -0.0102
+  run 2/5 ... informedness -0.0115
+  run 3/5 ... informedness +0.0421
+  run 4/5 ... informedness -0.0090
+  run 5/5 ... informedness -0.0235
+
+Fast lane (pinned, heuristic slow lane)
+  stage cost: mean 195.2 ns, max 6600 ns, budget 500 ns,
+  2721 of 99972 over budget (2.72%)
+  Includes two rdtsc reads (~40 ns of measurement overhead
+  on this host) plus the pacing check.
+
+Replay pacing (500x real time)
+  59481 of 99972 trades waited for their scheduled time
+  lag behind schedule: p50 0 ns, p99 8469 ns, max 189646 ns
+  = p99 0.00002 ms of market time against a 1000 ms advisory
+  lifetime, so pacing is not the limiting factor.
+  A trade sharing a millisecond with the one before it is due
+  immediately and shows zero wait; that is timestamp
+  granularity, not the host falling behind.
+
+Lane bridge
+  offered 99972, consumed 99971, dropped 0 (0.0%)
+
+Advisories
+  warn threshold calibrated from data: |net flow| > 4.3495 (q=0.95 over 5000 observations)
+  published 28574, reads that fell back to cache 12001,
+  rejected as expired or generation-stale 15420 (15.4%)
+
+FRESHNESS, against the 1000 ms signal horizon
+  offered  p50     87 ms (0.09x H), p99   1535 ms (1.53x H), max   4418 ms   over 87971 reads
+  acted    same as offered -- the freshness gate is off (--max-age-frac 0)
+  OFFERED is the slow lane's delivery property and the gate cannot improve it,
+  which is why the SLO is declared on it rather than on what got through.
+
+  The producer declared a horizon of 1000 ms for what it ships (decision).
+  SLO: offered-age p99 <= 1.00 x declared = 1000 ms ... BREACHED
+  Advice reaches the fast lane older than the horizon it
+  predicts over. A TTL cannot fix this -- raising it from
+  250 ms to 60 s cut rejections from 34.4% to 10.9% and
+  moved the outcome not at all. See docs/ROADMAP.md P0.
+
+Slow-lane publish cadence, in MARKET time
+  p50 138 ms, p99 1610 ms over 28574 publishes; budget 0.25 x H = 250 ms
+  9630 gaps over budget (33.70%) ... BREACHED
+  A slow lane can expire nothing, tear nothing and drop
+  nothing, and still be useless by not publishing often
+  enough. Nothing named that failure before this line.
+
+  CONTROL -- the tape's own inter-trade gaps: p50 27 ms, p99 1291 ms.
+  A slow lane cannot publish more often than the market gives
+  it something to say. Where the cadence p99 tracks this, the
+  gap is the market's event sparsity and no amount of
+  engineering removes it -- the answer is then to REJECT aged
+  advice, not to chase a cadence the tape cannot supply. Where
+  cadence exceeds it, the slow lane is genuinely behind.
+
+DELIVERED vs IDEAL decision, trade by trade
+  reference informedness +0.1582, delivered -0.0235
+  ideal sizes down 3320, lane sizes down 3103
+  both size down          1332  (40.1% of ideal's actions survived delivery)
+  ideal only, lane no     1988  the lane missed these
+  lane only, ideal no     1771  the lane acted where it should not
+  neither                94881
+  Same rule, same trades, same threshold. Everything that
+  differs is the delivery path.
+
+Adverse selection (labels from what the price did next)
+  toxic:  900   avoided 7 (0.8%), missed 893
+  benign: 99072   full size 95976 (96.9%), needlessly reduced 3096
+
+Informedness (TPR - FPR) across 5 runs
+  median -0.0102, range [-0.0235, +0.0421], sd 0.0255
+
+VERDICT
+  NOT RESOLVED. The median (-0.0102) is inside two standard
+  deviations of the run-to-run spread (0.0255), so this
+  configuration does not measure the policy -- it measures
+  thread scheduling. Whether an advisory happens to be fresh
+  when a toxic trade arrives depends on when the slow lane
+  last woke.
+
+  Do not quote a single run's number. To get a measurement,
+  reduce the dependence on timing: raise --ttl-ms so advice
+  stays valid across slow-lane wakeups, or lower --speed so
+  the slow lane publishes more often per unit of market
+  time.
+
+  15.4% of advisories were rejected as expired or
+  generation-stale. That is the design refusing to act on
+  outdated model output, not a malfunction -- but a policy that
+  is ignored most of the time cannot show much effect either
+  way.
+
+Machine:  AMD Ryzen 9 5950X 16-Core Processor
+          16 physical cores / 32 logical, SMT on
+          governor=performance boost=1 clocksource=tsc invariant_tsc=yes
+          kernel 7.0.0-29-generic, gcc 15.2.0
+Pinned:   logical CPU 4
+
+UNCONTROLLED ERROR SOURCES (3):
+  - No isolcpus/nohz_full: the kernel schedules other work on the measured core. Tail percentiles (p99.9+) include unrelated interference and should be treated as upper bounds.
+  - SMT is enabled: the sibling hyperthread shares execution resources with the measured core. Benchmarks pin to one logical CPU but do not idle its sibling.
+  - Turbo/boost is enabled: sustained-load and burst measurements run at different clocks.
+CONTRACT: freshness SLO BREACHED -> exit 5

@@ -23,19 +23,33 @@
  *      place; it cannot stall, slow, or block the fast lane.
  *
  *   3. EXPLICIT EXPIRY. Every advisory carries `valid_until`. The fast lane
- *      treats an expired advisory as absent. This is the load-bearing defence
- *      against acting on stale model output: staleness is not a heuristic to be
+ *      treats an expired advisory as absent: staleness is not a heuristic to be
  *      tuned, it is a timestamp comparison the fast path performs on every read.
  *
- * Property 3 is also where this system touches the LLM context-contamination
- * problem: an advisory derived from context that has since been invalidated is
- * exactly a contaminated inference, and `valid_until` plus `context_generation`
- * are the mechanism that bounds its blast radius. See docs/ARCHITECTURE.md.
+ *   4. DECLARED FRESHNESS. Every advisory also carries `signal_horizon_ns`, the
+ *      horizon of the thing it is predicting, and the consumer declares what
+ *      fraction of that horizon it will tolerate.
+ *
+ * Property 4 exists because property 3 was measured and found to bound the
+ * wrong quantity. With a 60-second TTL, so wide that almost nothing expired,
+ * acted-on advice had a p50 age of 82 ms and a p99 of 1507 ms against a 1000 ms
+ * prediction horizon -- one read in a hundred acting on advice older than the
+ * entire horizon it predicted over, while comfortably inside its lifetime.
+ * `valid_until` expresses a latency budget; what decides whether advice is
+ * worth anything is its age relative to its signal's horizon. See
+ * lanes/freshness.hpp and docs/ROADMAP.md.
+ *
+ * Properties 3 and 4 are also where this system touches the LLM
+ * context-contamination problem: an advisory derived from context that has
+ * since been invalidated is exactly a contaminated inference, and `valid_until`
+ * plus `context_generation` are the mechanism that bounds its blast radius. See
+ * docs/ARCHITECTURE.md.
  */
 
 #pragma once
 
 #include "titans/core/types.hpp"
+#include "freshness.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -88,6 +102,22 @@ struct Advisory {
     Timestamp valid_until = 0;
 
     /**
+     * @brief Horizon of the signal this advisory carries, in nanoseconds.
+     *
+     * Not a lifetime. It is how far into the future the underlying claim
+     * reaches -- for the toxic-flow policy, the window over which the price is
+     * predicted to move. A consumer uses it to decide how old is too old, which
+     * `valid_until` cannot express: advice about the next second is worthless
+     * at 900 ms old and advice about the next hour is not, and one absolute
+     * expiry cannot say both.
+     *
+     * 0 means the producer did not declare one, and a freshness gate then has
+     * nothing to work against and must let the advisory through rather than
+     * silently reject everything.
+     */
+    Timestamp signal_horizon_ns = 0;
+
+    /**
      * @brief Generation of the context this conclusion was drawn from.
      *
      * The fast lane bumps a context generation whenever it observes an event
@@ -97,6 +127,28 @@ struct Advisory {
      */
     uint64_t context_generation = 0;
 
+    /**
+     * @brief A slow-lane-computed PARAMETER the fast lane applies itself.
+     *
+     * The alternative to shipping a decision. Measurement forced this field
+     * into existence: a lane shipping decisions fired at nearly the right rate
+     * (3211 actions against an ideal 3320) and agreed with the ideal on only
+     * 49.1% of them, because a threshold-crossing decision is only correct at
+     * the instant it is taken. Three trades of delay -- the median here -- moves
+     * it onto the wrong trades, and no expiry rule or freshness gate can
+     * realign it, which is why neither helped.
+     *
+     * A parameter does not have that problem. The calibrated warn threshold is
+     * a 5000-sample quantile; it moves slowly, so it survives the trip. The
+     * decision moves at every trade, so it does not. Put the slow-changing
+     * quantity on the slow lane and let the fast lane evaluate the rule on
+     * state it already holds.
+     *
+     * This is the same split online feature stores make when they assign each
+     * feature its own staleness budget rather than one global freshness target.
+     */
+    double parameter = 0.0;
+
     /// Which model produced it, for attribution in post-trade analysis.
     char source[32] = {};
 
@@ -104,6 +156,23 @@ struct Advisory {
         return stance != AdvisoryStance::None &&
                valid_until > now &&
                context_generation == current_generation;
+    }
+
+    /// @brief How long ago this was issued, clamped at 0 for clock skew.
+    Timestamp age_at(Timestamp now) const {
+        return now > issued_at ? now - issued_at : 0;
+    }
+
+    /**
+     * @brief Fresh enough to act on under @p policy.
+     *
+     * True when the gate is disabled, and true when the producer declared no
+     * horizon: a gate with no horizon to measure against would reject
+     * everything, which is a worse failure than not gating.
+     */
+    bool is_fresh_at(Timestamp now, const FreshnessPolicy& policy) const {
+        if (!policy.gate_enabled() || signal_horizon_ns <= 0) return true;
+        return age_at(now) <= policy.max_age_ns(signal_horizon_ns);
     }
 };
 
@@ -214,8 +283,9 @@ private:
 class AdvisoryView {
 public:
     explicit AdvisoryView(const AdvisorySlot& slot,
-                          AdvisoryStance fallback = AdvisoryStance::Neutral)
-        : slot_(slot), fallback_(fallback) {}
+                          AdvisoryStance fallback = AdvisoryStance::Neutral,
+                          FreshnessPolicy freshness = {})
+        : slot_(slot), fallback_(fallback), freshness_(freshness) {}
 
     /**
      * @brief Refresh the cache and return the advisory in force at @p now.
@@ -231,14 +301,40 @@ public:
             ++stale_reads_;   // kept the previous value; see AdvisorySlot::try_read
         }
 
+        // Record the age of the newest advice the slow lane has produced,
+        // BEFORE any consumer-side check. Expiry and the freshness gate are
+        // both the consumer's policy; how old the available advice is, is the
+        // producer's property, and it is what the SLO is declared on.
+        //
+        // Recording this after the expiry check would make the SLO tautological
+        // whenever the TTL is tighter than the horizon: the distribution would
+        // be truncated at the TTL and the contract would report MET because it
+        // had thrown away every sample that would have failed it. That is
+        // exactly what the first version of this code did.
+        // Guarded on stance alone. A default-constructed advisory -- what
+        // `cached_` holds before the slow lane has published anything -- has
+        // stance None, so that is the complete condition. An earlier version
+        // also required `issued_at > 0`, which silently dropped every advisory
+        // issued at timestamp zero; the test that caught it publishes at 0
+        // because a sentinel that collides with a legitimate value is a bug
+        // whether or not the collision is likely.
+        const Timestamp age = cached_.age_at(now);
+        if (cached_.stance != AdvisoryStance::None) {
+            monitor_.record_offered(age);
+        }
+
         if (!cached_.is_valid_at(now, current_generation)) {
             ++rejected_;
-            Advisory neutral;
-            neutral.stance = fallback_;
-            neutral.size_multiplier = 1.0f;
-            neutral.context_generation = current_generation;
-            return neutral;
+            return neutral_for(current_generation);
         }
+
+        if (!cached_.is_fresh_at(now, freshness_)) {
+            ++rejected_stale_;
+            monitor_.record_gate_rejection();
+            return neutral_for(current_generation);
+        }
+
+        monitor_.record_acted(age);
         return cached_;
     }
 
@@ -247,12 +343,31 @@ public:
     /// @brief Advisories discarded for being expired or generation-stale.
     uint64_t rejected() const { return rejected_; }
 
+    /// @brief Advisories discarded for being too old relative to their horizon.
+    ///        Counted apart from `rejected()` on purpose: one says the advice
+    ///        ran out of time, the other says it was never going to be useful.
+    uint64_t rejected_stale() const { return rejected_stale_; }
+
+    const FreshnessMonitor& freshness() const { return monitor_; }
+    const FreshnessPolicy& freshness_policy() const { return freshness_; }
+
 private:
+    Advisory neutral_for(uint64_t generation) const {
+        Advisory neutral;
+        neutral.stance = fallback_;
+        neutral.size_multiplier = 1.0f;
+        neutral.context_generation = generation;
+        return neutral;
+    }
+
     const AdvisorySlot& slot_;
     AdvisoryStance fallback_;
+    FreshnessPolicy freshness_;
+    FreshnessMonitor monitor_;
     Advisory cached_{};
     uint64_t stale_reads_ = 0;
     uint64_t rejected_ = 0;
+    uint64_t rejected_stale_ = 0;
 };
 
 }  // namespace lanes

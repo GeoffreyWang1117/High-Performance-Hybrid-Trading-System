@@ -52,6 +52,9 @@
 #include "titans/context/binance_dataset.hpp"
 #include "titans/lanes/advisory.hpp"
 #include "titans/lanes/flow_policy.hpp"
+#include "titans/lanes/freshness.hpp"
+#include "titans/eval/metrics.hpp"
+#include "titans/eval/walk_forward.hpp"
 #include "titans/lanes/lane_bridge.hpp"
 #include "titans/lanes/latency_budget.hpp"
 
@@ -82,6 +85,27 @@ struct Options {
     /// Advisory lifetime. Short enough that a stalled slow lane stops being
     /// listened to quickly.
     int64_t advisory_ttl_ms = 250;
+    /**
+     * @brief Reject advice older than this fraction of the signal's horizon.
+     *
+     * 0 keeps the pre-freshness-gate behaviour, which is what every published
+     * number here was measured under. Not defaulted to something helpful until
+     * a sweep says which value helps -- picking it first and measuring after is
+     * how a tuned constant gets mistaken for a design.
+     */
+    double max_age_frac = 0.0;
+    /// Declared SLO on the p99 of OFFERED advisory age, as a fraction of horizon.
+    double slo_p99_frac = 1.0;
+    /// Slow lane must publish at least this often, as a fraction of horizon.
+    double cadence_frac = 0.25;
+    /**
+     * @brief What the slow lane ships: the decision, or the parameter behind it.
+     *
+     * "decision" is the original design and what every earlier number was
+     * measured under. "parameter" ships the calibrated threshold and lets the
+     * fast lane evaluate the same rule against its own current window.
+     */
+    std::string advisory_kind = "decision";
     /**
      * @brief Quantile of observed |net flow| above which the slow lane warns.
      *
@@ -121,6 +145,10 @@ Options parse(int argc, char** argv) {
         else if (a == "--speed" && i + 1 < argc)        o.speed = std::atof(argv[++i]);
         else if (a == "--repeat" && i + 1 < argc)       o.repeat = std::atoi(argv[++i]);
         else if (a == "--quantile" && i + 1 < argc)     o.toxic_flow_quantile = std::atof(argv[++i]);
+        else if (a == "--advisory" && i + 1 < argc)     o.advisory_kind = argv[++i];
+        else if (a == "--max-age-frac" && i + 1 < argc) o.max_age_frac = std::atof(argv[++i]);
+        else if (a == "--slo-p99-frac" && i + 1 < argc) o.slo_p99_frac = std::atof(argv[++i]);
+        else if (a == "--cadence-frac" && i + 1 < argc) o.cadence_frac = std::atof(argv[++i]);
         else if (a == "--fast-core" && i + 1 < argc)    o.fast_core = std::atoi(argv[++i]);
         else if (a == "--slow-core" && i + 1 < argc)    o.slow_core = std::atoi(argv[++i]);
         else if (a == "--help" || a == "-h") {
@@ -135,6 +163,10 @@ Options parse(int argc, char** argv) {
                 "  --speed X               replay speed vs real time (default 1000)\n"
                 "  --repeat N              independent replays (default 3)\n"
                 "  --quantile Q            warn above this |flow| quantile (default 0.95)\n"
+                "  --advisory decision|parameter   what the slow lane ships (default decision)\n"
+                "  --max-age-frac F        reject advice older than F x horizon (0 = off)\n"
+                "  --slo-p99-frac F        declared SLO on offered-age p99 (default 1.0)\n"
+                "  --cadence-frac F        slow lane must publish every F x horizon (default 0.25)\n"
                 "  --budget-ns N           fast-lane per-event budget (default 500)\n"
                 "  --fast-core N --slow-core N   physical cores to pin to\n");
             std::exit(0);
@@ -215,12 +247,97 @@ int main(int argc, char** argv) {
         int64_t lag_p50 = 0, lag_p99 = 0, lag_max = 0;
         double informedness = 0.0;
         double warn_threshold = 0.0;
-        /// Market-time age of the advisory at the moment it was acted on.
-        /// Not the same thing as expiry: an advisory can be well inside its
-        /// TTL and still describe a book state the horizon has moved past.
-        int64_t age_p50_ms = 0, age_p99_ms = 0, age_max_ms = 0;
-        uint64_t acted_with_advisory = 0;
+        /// Market-time age of the advisory when the fast lane looked at it.
+        /// OFFERED is the slow lane's delivery property and the gate cannot
+        /// improve it; ACTED is what the gate let through.
+        int64_t offered_p50_ms = 0, offered_p99_ms = 0, offered_max_ms = 0;
+        int64_t acted_p50_ms = 0, acted_p99_ms = 0;
+        uint64_t offered_n = 0, acted_n = 0, gate_rejections = 0;
+        bool slo_met = true;
+        int64_t declared_horizon_ms = 0;
+        /// Slow-lane publish cadence, in market time.
+        int64_t cadence_p50_ms = 0, cadence_p99_ms = 0;
+        uint64_t cadence_violations = 0, cadence_publishes = 0;
+        /// Control: the tape's own inter-trade gaps, in market time. Without
+        /// this the cadence numbers cannot be attributed -- a slow lane cannot
+        /// publish more often than the market gives it something to say.
+        int64_t gap_p50_ms = 0, gap_p99_ms = 0;
+        /// Agreement between what the lane delivered and what the same policy
+        /// would have decided with no delivery path at all. This is the
+        /// instrument that says WHERE the signal goes, rather than confirming
+        /// once more that it is gone.
+        uint64_t agree = 0, lane_only = 0, ideal_only = 0, both_off = 0;
+        double ideal_informedness = 0.0;
     };
+
+    // ------------------------------------------------------------------
+    // Reference decisions: the SAME FlowPolicy, run offline over the same
+    // trades with no bridge, no thread and no advisory. This is what
+    // titans_walkforward measures, computed here so the two can be compared
+    // trade by trade instead of only in aggregate.
+    //
+    // Computed before the replay and read from an array during it, so the fast
+    // lane pays one byte-compare rather than running a second policy inside its
+    // budget.
+    // ------------------------------------------------------------------
+    std::vector<uint8_t> ideal_sized_down(n, 0);
+    double ideal_informedness = 0.0;
+    {
+        std::vector<AggTrade> tr;
+        std::vector<int8_t> lb;
+        tr.reserve(n);
+        lb.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            tr.push_back(*aligned[i]);
+            lb.push_back(events[i].is_anomaly ? 1 : 0);
+        }
+        // Threshold from the same data the lane calibrates on, so the
+        // comparison isolates DELIVERY and not the choice of threshold.
+        lanes::FlowPolicy::Config warm_cfg;
+        warm_cfg.window = 50;
+        warm_cfg.contaminate = opts.contaminate;
+        const auto warm = eval::run_policy_over_day(tr, lb, warm_cfg, true);
+        std::vector<double> calib(warm.abs_net.begin(),
+                                  warm.abs_net.begin() +
+                                      std::min(warm.abs_net.size(), opts.calibration_n));
+        std::sort(calib.begin(), calib.end());
+        lanes::FlowPolicy::Config cfg = warm_cfg;
+        cfg.warn_above = calib.empty() ? 0.0 : calib[std::min(
+            calib.size() - 1,
+            static_cast<size_t>(calib.size() * opts.toxic_flow_quantile))];
+
+        lanes::FlowPolicy policy(cfg);
+        lanes::FlowPolicy::Decision pending;
+        bool have_pending = false;
+        eval::PolicyOutcome ideal{};
+        for (size_t i = 0; i < n; ++i) {
+            if (have_pending) {
+                const bool sd = pending.risk_off &&
+                    pending.direction == static_cast<int8_t>(tr[i].aggressor_sign());
+                ideal_sized_down[i] = sd ? 1 : 0;
+                if (sd) {
+                    if (lb[i] > 0) ++ideal.avoided_toxic; else ++ideal.forgone_benign;
+                } else {
+                    if (lb[i] > 0) ++ideal.missed_toxic; else ++ideal.kept_benign;
+                }
+            }
+            policy.observe(tr[i].aggressor_sign() * tr[i].quantity);
+            if (policy.warm()) { pending = policy.decide(); have_pending = true; }
+        }
+        ideal_informedness = ideal.informedness();
+        std::printf("\nReference (same policy, no delivery path): informedness "
+                    "%+.4f, acts on %.2f%% of trades\n"
+                    "  threshold |net| > %.4f, from the first %zu per-TRADE "
+                    "samples.\n"
+                    "  The slow lane calibrates from per-PUBLISH samples, so the "
+                    "two thresholds\n  differ slightly and the LEVELS below are "
+                    "not directly comparable to this.\n"
+                    "  What is comparable is the agreement rate, and the "
+                    "decision-vs-parameter\n  comparison, which share a "
+                    "threshold to four significant figures.\n",
+                    ideal_informedness, ideal.action_rate() * 100.0,
+                    cfg.warn_above, opts.calibration_n);
+    }
 
     bench::pin_to_cpu(opts.fast_core);
     const bench::TscClock clock(150);
@@ -233,11 +350,15 @@ int main(int argc, char** argv) {
                 opts.repeat);
 
     auto run_once = [&]() -> RunResult {
+        const bool parameter_mode = (opts.advisory_kind == "parameter");
         LaneBridge<4096> bridge;
         AdvisorySlot slot;
         std::atomic<bool> stop{false};
         std::atomic<uint64_t> advisories_published{0};
         std::atomic<double> calibrated_threshold{0.0};
+        const Timestamp horizon_ns = opts.horizon_ms * 1000000LL;
+        CadenceBudget cadence(static_cast<Timestamp>(
+            static_cast<double>(horizon_ns) * opts.cadence_frac));
 
         // ---- Slow lane -------------------------------------------------
         // Consumes whatever the bridge gives it -- a sample, not the tape --
@@ -266,6 +387,13 @@ int main(int argc, char** argv) {
             std::vector<double> calib;
             calib.reserve(opts.calibration_n);
             bool calibrated = false;
+            // Market time spanned by the calibration sample. This is the
+            // parameter's own horizon: a q=0.95 threshold drawn from 5000
+            // observations describes the flow distribution over the stretch it
+            // was drawn from, and it does not go stale in a second the way a
+            // threshold CROSSING does. Declaring one horizon for both is what
+            // made valid_until meaningless.
+            Timestamp calib_first_ns = 0, calib_last_ns = 0;
 
             LaneObservation obs;
             while (!stop.load(std::memory_order_relaxed)) {
@@ -298,6 +426,8 @@ int main(int argc, char** argv) {
                 FlowPolicy::Decision d = policy.decide();
 
                 if (!calibrated) {
+                    if (calib.empty()) calib_first_ns = obs.ingress_time;
+                    calib_last_ns = obs.ingress_time;
                     calib.push_back(std::abs(d.net));
                     if (calib.size() < opts.calibration_n) continue;
                     std::sort(calib.begin(), calib.end());
@@ -323,10 +453,29 @@ int main(int argc, char** argv) {
                 a.confidence = d.confidence;
                 a.issued_at = obs.ingress_time;
                 a.valid_until = obs.ingress_time + opts.advisory_ttl_ms * 1000000LL;
+                // The horizon of the claim, not its lifetime. The toxic-flow
+                // label asks what the price does within horizon_ms, so that is
+                // how far the advice reaches and what its age must be judged
+                // against.
+                // The horizon of the claim, judged by WHAT IS SHIPPED. A
+                // decision is a threshold crossing and is only correct at the
+                // instant it is taken, so its horizon is the signal's. A
+                // parameter is a distributional summary and its horizon is the
+                // stretch of market it was estimated over -- measured, not
+                // configured.
+                a.signal_horizon_ns =
+                    parameter_mode && calib_last_ns > calib_first_ns
+                        ? (calib_last_ns - calib_first_ns)
+                        : horizon_ns;
+                // Ship the parameter alongside the decision, always. It costs
+                // 8 bytes in a struct that is already copied whole, and it is
+                // what the fast lane uses in --advisory parameter mode.
+                a.parameter = policy.config().warn_above;
                 a.context_generation = obs.context_generation;
                 std::strncpy(a.source, opts.slow_lane.c_str(), sizeof(a.source) - 1);
 
                 slot.publish(a);
+                cadence.observe_publish(obs.ingress_time);
                 advisories_published.fetch_add(1, std::memory_order_relaxed);
 
                 if (opts.slow_lane == "llm") {
@@ -344,7 +493,18 @@ int main(int argc, char** argv) {
 
         // ---- Fast lane -------------------------------------------------
         LatencyBudget budget("fast lane: observe + advise + size", opts.budget_ns);
-        AdvisoryView view(slot, AdvisoryStance::RiskOn);
+        // In parameter mode the fast lane evaluates the rule itself, against a
+        // window that is current by construction. Same FlowPolicy class the
+        // slow lane uses, so "the same rule" is a fact rather than a claim.
+        FlowPolicy::Config fast_cfg;
+        fast_cfg.window = 50;
+        fast_cfg.contaminate = false;   // the fast lane sees the real tape
+        FlowPolicy fast_policy(fast_cfg);
+
+        FreshnessPolicy freshness;
+        freshness.max_age_fraction = opts.max_age_frac;
+        freshness.slo_p99_fraction = opts.slo_p99_frac;
+        AdvisoryView view(slot, AdvisoryStance::RiskOn, freshness);
         Outcome outcome{};
         const uint64_t generation = 1;   // no invalidation events in a flat replay
 
@@ -356,8 +516,10 @@ int main(int argc, char** argv) {
         // the replay is in fact keeping up. Only the magnitude matters.
         std::vector<int64_t> lag_ns;
         lag_ns.reserve(n);
-        std::vector<int64_t> advisory_age_ns;
-        advisory_age_ns.reserve(n);
+        uint64_t agree = 0, lane_only = 0, ideal_only = 0, both_off = 0;
+        bench::Histogram trade_gaps;
+        Timestamp prev_market_ns = 0;
+
 
         for (size_t i = 0; i < n; ++i) {
             const auto& e = events[i];
@@ -374,6 +536,11 @@ int main(int argc, char** argv) {
                 lag_ns.push_back(static_cast<int64_t>(before - due));
             }
 
+            if (prev_market_ns != 0 && e.timestamp > prev_market_ns) {
+                trade_gaps.record(static_cast<uint64_t>(e.timestamp - prev_market_ns));
+            }
+            prev_market_ns = e.timestamp;
+
             BudgetScope scope(budget, clock.ticks_per_ns());
 
             LaneObservation obs;
@@ -385,19 +552,36 @@ int main(int argc, char** argv) {
             obs.sequence = i;
             bridge.offer(obs);                   // wait-free; drops when full
 
+            // The view records the age distributions itself; see
+            // lanes/freshness.hpp for why offered and acted-on are kept apart.
             const Advisory a = view.current(e.timestamp, generation);
-            // How old is the advice, in the market's own clock? The TTL bounds
-            // this, but the bound is not the distribution: what matters for a
-            // 1000 ms toxic-flow horizon is where the age actually sits.
-            if (a.issued_at > 0 && e.timestamp >= a.issued_at) {
-                advisory_age_ns.push_back(
-                    static_cast<int64_t>(e.timestamp - a.issued_at));
+
+            // Act only when the risk side matches this trade's aggressor. An
+            // undirected reading fires on both sides and cancels out; see
+            // Advisory::risk_direction.
+            bool sized_down;
+            if (parameter_mode) {
+                // The threshold came from the slow lane; the decision is taken
+                // here, on a window that ends at the previous trade. Nothing
+                // about the decision has had time to go stale.
+                if (a.parameter > 0.0 && fast_policy.warm()) {
+                    fast_policy.set_warn_above(a.parameter);
+                    const FlowPolicy::Decision d = fast_policy.decide();
+                    sized_down = d.risk_off && d.direction == t.aggressor_sign();
+                } else {
+                    sized_down = false;
+                }
+                fast_policy.observe(t.aggressor_sign() * t.quantity);
+            } else {
+                sized_down = (a.size_multiplier < 0.5f) &&
+                             (a.risk_direction == t.aggressor_sign());
             }
-            // Act only when the advisory's risk side matches this trade's
-            // aggressor. An undirected reading fires on both sides and
-            // cancels out; see Advisory::risk_direction.
-            const bool sized_down = (a.size_multiplier < 0.5f) &&
-                                    (a.risk_direction == t.aggressor_sign());
+
+            const bool ideal = ideal_sized_down[i] != 0;
+            if (sized_down && ideal)        ++agree;
+            else if (sized_down && !ideal)  ++lane_only;
+            else if (!sized_down && ideal)  ++ideal_only;
+            else                            ++both_off;
 
             if (sized_down) {
                 ++outcome.sized_down;
@@ -436,18 +620,35 @@ int main(int argc, char** argv) {
         r.lag_p99 = pct(99);
         r.lag_max = lag_ns.empty() ? 0 : lag_ns.back();
 
-        std::sort(advisory_age_ns.begin(), advisory_age_ns.end());
-        auto age_ms = [&](double p) -> int64_t {
-            if (advisory_age_ns.empty()) return 0;
-            const auto idx = std::min(advisory_age_ns.size() - 1,
-                static_cast<size_t>(advisory_age_ns.size() * p / 100.0));
-            return advisory_age_ns[idx] / 1000000;
-        };
-        r.age_p50_ms = age_ms(50);
-        r.age_p99_ms = age_ms(99);
-        r.age_max_ms = advisory_age_ns.empty() ? 0
-                     : advisory_age_ns.back() / 1000000;
-        r.acted_with_advisory = advisory_age_ns.size();
+        const auto& fm = view.freshness();
+        auto to_ms = [](uint64_t ns) { return static_cast<int64_t>(ns / 1000000); };
+        r.offered_p50_ms = to_ms(fm.offered().percentile(50));
+        r.offered_p99_ms = to_ms(fm.offered().percentile(99));
+        r.offered_max_ms = to_ms(fm.offered().max());
+        r.acted_p50_ms   = to_ms(fm.acted().percentile(50));
+        r.acted_p99_ms   = to_ms(fm.acted().percentile(99));
+        r.offered_n = fm.offered().count();
+        r.acted_n = fm.acted().count();
+        r.gate_rejections = fm.gate_rejections();
+        // Against the horizon the producer actually declared, not the one the
+        // command line named: in parameter mode they differ by design.
+        Advisory probe;
+        const Timestamp declared = slot.try_read(probe) && probe.signal_horizon_ns > 0
+                                       ? probe.signal_horizon_ns
+                                       : opts.horizon_ms * 1000000LL;
+        r.declared_horizon_ms = declared / 1000000;
+        r.slo_met = fm.slo_met(view.freshness_policy(), declared);
+        r.cadence_p50_ms = to_ms(cadence.intervals().percentile(50));
+        r.cadence_p99_ms = to_ms(cadence.intervals().percentile(99));
+        r.cadence_violations = cadence.violations();
+        r.cadence_publishes = cadence.publishes();
+        r.gap_p50_ms = to_ms(trade_gaps.percentile(50));
+        r.gap_p99_ms = to_ms(trade_gaps.percentile(99));
+        r.agree = agree;
+        r.lane_only = lane_only;
+        r.ideal_only = ideal_only;
+        r.both_off = both_off;
+        r.ideal_informedness = ideal_informedness;
 
         const uint64_t tox = outcome.avoided_toxic + outcome.missed_toxic;
         const uint64_t ben = outcome.forgone_benign + outcome.kept_benign;
@@ -515,17 +716,97 @@ int main(int argc, char** argv) {
                 last.published, last.stale_reads, last.rejected,
                 n ? 100.0 * last.rejected / n : 0.0);
 
-    std::printf("\nAdvisory age when acted on, in MARKET time\n");
-    std::printf("  p50 %ld ms, p99 %ld ms, max %ld ms, over %lu reads\n",
-                static_cast<long>(last.age_p50_ms),
-                static_cast<long>(last.age_p99_ms),
-                static_cast<long>(last.age_max_ms),
-                last.acted_with_advisory);
-    std::printf("  Against a %ld ms toxic-flow horizon. This is the quantity\n"
-                "  the TTL bounds but does not describe: advice can sit well\n"
-                "  inside its lifetime and still refer to a book the horizon\n"
-                "  has already moved past.\n",
-                static_cast<long>(opts.horizon_ms));
+    // ------------------------------------------------------------------
+    // Freshness contract
+    // ------------------------------------------------------------------
+    const long H = static_cast<long>(opts.horizon_ms);
+    std::printf("\nFRESHNESS, against the %ld ms signal horizon\n", H);
+    std::printf("  offered  p50 %6ld ms (%.2fx H), p99 %6ld ms (%.2fx H), "
+                "max %6ld ms   over %lu reads\n",
+                static_cast<long>(last.offered_p50_ms),
+                H ? static_cast<double>(last.offered_p50_ms) / H : 0.0,
+                static_cast<long>(last.offered_p99_ms),
+                H ? static_cast<double>(last.offered_p99_ms) / H : 0.0,
+                static_cast<long>(last.offered_max_ms), last.offered_n);
+    if (opts.max_age_frac > 0.0) {
+        std::printf("  acted    p50 %6ld ms (%.2fx H), p99 %6ld ms (%.2fx H)"
+                    "                  over %lu reads\n",
+                    static_cast<long>(last.acted_p50_ms),
+                    H ? static_cast<double>(last.acted_p50_ms) / H : 0.0,
+                    static_cast<long>(last.acted_p99_ms),
+                    H ? static_cast<double>(last.acted_p99_ms) / H : 0.0,
+                    last.acted_n);
+        std::printf("  gate     rejected %lu of %lu live advisories as older "
+                    "than %.2f x H\n",
+                    last.gate_rejections, last.offered_n, opts.max_age_frac);
+    } else {
+        std::printf("  acted    same as offered -- the freshness gate is off "
+                    "(--max-age-frac 0)\n");
+    }
+    std::printf("  OFFERED is the slow lane's delivery property and the gate "
+                "cannot improve it,\n  which is why the SLO is declared on it "
+                "rather than on what got through.\n");
+
+    const long DH = static_cast<long>(last.declared_horizon_ms);
+    std::printf("\n  The producer declared a horizon of %ld ms for what it "
+                "ships (%s).\n", DH, opts.advisory_kind.c_str());
+    std::printf("  SLO: offered-age p99 <= %.2f x declared = %ld ms ... %s\n",
+                opts.slo_p99_frac, static_cast<long>(opts.slo_p99_frac * DH),
+                last.slo_met ? "MET" : "BREACHED");
+    if (!last.slo_met) {
+        std::printf("  Advice reaches the fast lane older than the horizon it\n"
+                    "  predicts over. A TTL cannot fix this -- raising it from\n"
+                    "  250 ms to 60 s cut rejections from 34.4%% to 10.9%% and\n"
+                    "  moved the outcome not at all. See docs/ROADMAP.md P0.\n");
+    }
+
+    std::printf("\nSlow-lane publish cadence, in MARKET time\n");
+    std::printf("  p50 %ld ms, p99 %ld ms over %lu publishes; budget %.2f x H "
+                "= %ld ms\n",
+                static_cast<long>(last.cadence_p50_ms),
+                static_cast<long>(last.cadence_p99_ms),
+                last.cadence_publishes, opts.cadence_frac,
+                static_cast<long>(opts.cadence_frac * H));
+    std::printf("  %lu gaps over budget (%.2f%%) ... %s\n",
+                last.cadence_violations,
+                last.cadence_publishes
+                    ? 100.0 * last.cadence_violations / last.cadence_publishes : 0.0,
+                last.cadence_violations == 0 ? "PASSED" : "BREACHED");
+    std::printf("  A slow lane can expire nothing, tear nothing and drop\n"
+                "  nothing, and still be useless by not publishing often\n"
+                "  enough. Nothing named that failure before this line.\n");
+    std::printf("\n  CONTROL -- the tape's own inter-trade gaps: p50 %ld ms, "
+                "p99 %ld ms.\n", static_cast<long>(last.gap_p50_ms),
+                static_cast<long>(last.gap_p99_ms));
+    std::printf("  A slow lane cannot publish more often than the market gives\n"
+                "  it something to say. Where the cadence p99 tracks this, the\n"
+                "  gap is the market's event sparsity and no amount of\n"
+                "  engineering removes it -- the answer is then to REJECT aged\n"
+                "  advice, not to chase a cadence the tape cannot supply. Where\n"
+                "  cadence exceeds it, the slow lane is genuinely behind.\n");
+
+    // ------------------------------------------------------------------
+    // Where the signal goes
+    // ------------------------------------------------------------------
+    {
+        const uint64_t ideal_on = last.agree + last.ideal_only;
+        const uint64_t lane_on = last.agree + last.lane_only;
+        std::printf("\nDELIVERED vs IDEAL decision, trade by trade\n");
+        std::printf("  reference informedness %+.4f, delivered %+.4f\n",
+                    last.ideal_informedness, last.informedness);
+        std::printf("  ideal sizes down %lu, lane sizes down %lu\n",
+                    ideal_on, lane_on);
+        std::printf("  both size down      %8lu  (%.1f%% of ideal's actions "
+                    "survived delivery)\n", last.agree,
+                    ideal_on ? 100.0 * last.agree / ideal_on : 0.0);
+        std::printf("  ideal only, lane no %8lu  the lane missed these\n",
+                    last.ideal_only);
+        std::printf("  lane only, ideal no %8lu  the lane acted where it "
+                    "should not\n", last.lane_only);
+        std::printf("  neither             %8lu\n", last.both_off);
+        std::printf("  Same rule, same trades, same threshold. Everything that\n"
+                    "  differs is the delivery path.\n");
+    }
 
     std::printf("\nAdverse selection (labels from what the price did next)\n");
     const uint64_t tox = last.outcome.avoided_toxic + last.outcome.missed_toxic;
@@ -584,5 +865,17 @@ int main(int argc, char** argv) {
 
     std::printf("\n");
     fp.print();
+
+    // A declared contract that cannot fail the run is a comment. Exit 5 keeps
+    // the freshness breach distinguishable from a crash (1) or bad usage (2).
+    // Only the freshness SLO gates the exit code. The cadence budget is
+    // reported with its control rather than enforced, because the tape's own
+    // p99 inter-trade gap (1291 ms here) exceeds any cadence a lane could hold:
+    // failing a run for not publishing during a silent market would be failing
+    // it for physics.
+    if (!last.slo_met) {
+        std::printf("CONTRACT: freshness SLO BREACHED -> exit 5\n");
+        return 5;
+    }
     return 0;
 }

@@ -22,6 +22,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The fast/slow boundary and why each mechanism is shaped the way it is |
 | [docs/RELATED_WORK.md](docs/RELATED_WORK.md) | What here is genuinely unusual, and what is a re-implementation |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is next, in priority order, and what industry practice each item comes from |
+| [docs/FRESHNESS.md](docs/FRESHNESS.md) | Advisory age as a contract: why expiry was the wrong knob |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -343,7 +344,7 @@ fallback would otherwise look like success.
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 13 modules including lane isolation, task design, and the walk-forward protocol |
+| `titans_tests` | 15 modules including lane isolation, task design, the walk-forward protocol, and the freshness contract |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -409,39 +410,78 @@ configuration does not measure the policy.
 
 For a long time the reading was "the toy order-flow policy has no value". That
 was wrong, and the walk-forward below is what showed it: the same rule, on the
-same 100 000 trades, with the same threshold, scores **+0.19** when it is
-evaluated without the lane machinery. The policy works. What does not work is
-getting the advice there in time.
+same trades, with the same threshold, scores **+0.16** when it is evaluated
+without the lane machinery. The policy works. What did not work was the lane.
 
-Three measurements narrow that down, and the first two are dead ends worth
-recording:
+Four hypotheses were tested. The first three are dead ends, kept because a
+rejected explanation is worth as much as the one that survives:
 
 | Hypothesis | Test | Result |
 |---|---|---|
-| Advisories expire before use | raise `--ttl-ms` 250 → 60 000 | rejection 34.4% → 10.9%, informedness stays flat (−0.012, +0.017, −0.004, +0.013) |
-| The bridge sheds observations | read `dropped` | 0 of 99 972. Nothing is shed at this rate |
-| The advice is simply **old** | measure advisory age in market time | **p50 82 ms, p99 1507 ms, max 4418 ms — against a 1000 ms horizon** |
+| Advisories expire before use | `--ttl-ms` 250 → 60 000 | rejection 34.4% → 10.9%, informedness flat (−0.012, +0.017, −0.004, +0.013) |
+| The bridge sheds observations | read `dropped` | 0 of 99 972 |
+| The advice is too old, so gate it | `--max-age-frac` 1.0 → 0.05 | acted-on p99 age tracks the gate exactly (897 → 50 ms). Informedness stays unresolved at **every** setting |
+| The advice is *misaligned*, not stale | compare the delivered decision against the ideal one, trade by trade | **the lane acts at nearly the right rate and on the wrong trades** |
 
-That last row is the answer, and it is the one the TTL knob does not control:
+The fourth is the answer, and it took an instrument to see:
 
 ```
-Advisory age when acted on, in MARKET time
-  p50 82 ms, p99 1507 ms, max 4418 ms, over 88998 reads
+DELIVERED vs IDEAL decision, trade by trade
+  ideal sizes down 3320, lane sizes down 3211
+  both size down          1332  (40.1% of ideal's actions survived delivery)
+  ideal only, lane no     1988  the lane missed these
+  lane only, ideal no     1879  the lane acted where it should not
 ```
 
-An advisory can be far inside a 60-second lifetime and still describe a book
-state the prediction horizon has already moved past. One read in a hundred acts
-on advice older than the entire horizon it is predicting over. **The TTL bounds
-the wrong quantity** — the design's freshness knob is calibrated against wall
-latency, when what matters is age relative to the prediction horizon.
+Nearly the right number of actions, barely 40% on the right trades. A
+threshold *crossing* is only correct at the instant it is taken; the median
+advisory here is three trades old, and three trades is enough to move the
+action onto its neighbours. No expiry rule and no freshness gate can realign
+it, which is exactly why neither helped.
 
-So the honest statement is now sharper than "no effect": a slow lane that
-publishes at this cadence cannot deliver a signal with a one-second horizon,
-and the fix is a design change rather than a tuning pass.
+### Ship the parameter, not the decision
 
-What **is** measured: the fast-lane stage costs 254 ns mean against a 500 ns
-budget; the bridge drops nothing at this rate; and pacing lag runs four orders
-of magnitude below the advisory lifetime.
+So the slow lane stopped shipping its answer and started shipping the
+calibrated threshold behind it, letting the fast lane evaluate the same rule
+against a window that is current by construction. The threshold is a
+5000-sample quantile: it moves slowly, so it survives the trip. The decision
+moves every trade, so it does not.
+
+Same rule, same trades, same threshold to four significant figures, same lane,
+same advisory ages. Only the payload differs:
+
+| `--advisory` | agreement with ideal | informedness | run-to-run sd | verdict |
+|---|---|---|---|---|
+| `decision` | 40.1% | median −0.0102 | 0.0255 | NOT RESOLVED |
+| `parameter` | **89.8%** | median **+0.2426** | **0.0028** | **resolved** |
+
+The standard deviation is the part worth staring at. Shipping a decision makes
+the outcome depend on when the slow lane happened to wake — a 9× run-to-run
+spread. Shipping a parameter makes it very nearly deterministic.
+
+This also fixes what the freshness contract was measuring. An advisory declares
+the horizon of *what it carries*, and the two payloads do not have the same
+one: a decision inherits the signal's 1000 ms horizon, while a threshold's
+horizon is the stretch of market it was estimated over — 789 s here, measured
+rather than configured. Under identical delivery, at an identical p99 age of
+~1530 ms:
+
+```
+--advisory decision    declared horizon 1000 ms      SLO BREACHED   exit 5
+--advisory parameter   declared horizon 789282 ms    SLO MET        exit 0
+```
+
+Both assertions run in `scripts/reproduce.sh`. A build where shipping a
+decision suddenly passes means the contract stopped being enforced.
+
+The general form is the same split online feature stores make when they give
+each feature its own staleness budget instead of one global freshness target:
+**put the slow-moving quantity on the slow lane, and evaluate the fast-moving
+one where the state is fresh.**
+
+What is also measured: the fast-lane stage costs 222 ns mean against a 500 ns
+budget even with the rule evaluated locally; the bridge drops nothing at this
+rate; and pacing lag runs four orders of magnitude below the advisory lifetime.
 
 ---
 
@@ -484,12 +524,13 @@ zero. So the single-day number was not inflated by in-sample calibration — a
 result that could easily have gone the other way, and one that only exists
 because both arms were run.
 
-**This is an upper bound, not a live-lane number.** It removes the lane
-machinery: no threads, no advisory expiry, decision taken from the window ending
-at the previous trade. `titans_lanes` measures the same policy with the
-machinery and does not resolve it. The gap between +0.17 here and ~0 there is
-the cost of delivery, and the advisory-age distribution above is what it is made
-of.
+**This was an upper bound, and the lane has since reached it.** The number here
+removes the lane machinery: no threads, no advisory expiry, decision taken from
+the window ending at the previous trade. When it was first measured,
+`titans_lanes` scored ~0 on the same policy and the gap was unexplained. It is
+now attributed and mostly closed — the lane recovers 89.8% of the reference's
+actions once the slow lane ships the threshold instead of the decision. See the
+section above.
 
 ### Two null results from this run
 
@@ -600,7 +641,7 @@ include/titans/bench/         measurement: TSC timing, noise floor, machine fing
 include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 13 test modules
+src/, examples/, tests/       binaries, experiment drivers, 15 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results

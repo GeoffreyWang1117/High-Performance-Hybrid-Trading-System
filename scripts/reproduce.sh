@@ -154,11 +154,30 @@ stage "Real market data (README leakage audit)"
   check "leakage audit passes on the full session" test $? -eq 0
   sed -n '/LEAKAGE AUDIT/,/^$/p;/VERDICT/,/^$/p' /tmp/titans_dataset.out | sed 's/^/  /'
 
-  stage "End-to-end lane replay"
+  stage "End-to-end lane replay: what the slow lane ships"
+  # The controlled comparison. Same rule, same trades, same threshold to four
+  # significant figures; the only difference is whether the slow lane ships the
+  # DECISION or the PARAMETER behind it.
+  for KIND in decision parameter; do
+    "$BUILD_DIR"/titans_lanes "$CSV" --max-rows 100000 --speed 500 --ttl-ms 1000 \
+        --repeat 5 --advisory "$KIND" > "/tmp/titans_lanes_$KIND.out" 2>&1
+    echo "  --- --advisory $KIND (exit $?) ---"
+    grep -E 'declared a horizon|SLO: offered-age|survived delivery|median |RESOLVED' \
+        "/tmp/titans_lanes_$KIND.out" | sed 's/^ */    /'
+  done
+
+  # Shipping a decision must BREACH its freshness SLO: it declares the signal's
+  # 1000 ms horizon and arrives at a p99 age above it. That is the finding, so
+  # a run where it suddenly passes means the contract stopped being enforced.
   "$BUILD_DIR"/titans_lanes "$CSV" --max-rows 100000 --speed 500 --ttl-ms 1000 \
-      --repeat 5 > /tmp/titans_lanes.out 2>&1
-  check "titans_lanes ran" test $? -eq 0
-  sed -n '/Informedness/,/^$/p;/VERDICT/,/^$/p' /tmp/titans_lanes.out | sed 's/^/  /'
+      --repeat 3 --advisory decision >/dev/null 2>&1
+  check "shipping a decision breaches its freshness SLO (exit 5)" test $? -eq 5
+
+  # Shipping a parameter must pass: a calibrated threshold declares the horizon
+  # it was estimated over, and the same age is well inside it.
+  "$BUILD_DIR"/titans_lanes "$CSV" --max-rows 100000 --speed 500 --ttl-ms 1000 \
+      --repeat 3 --advisory parameter >/dev/null 2>&1
+  check "shipping a parameter meets its freshness SLO" test $? -eq 0
 fi
 
 # ---------------------------------------------------------------------------
