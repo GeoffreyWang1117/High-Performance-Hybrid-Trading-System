@@ -205,6 +205,16 @@ Two rules govern that code, both enforced by tests:
 | `python/data/` | Binance archive fetch with checksum verification |
 | `python/serving/` | CPU inference shim (OpenAI-compatible) for CI and GPU-less hosts |
 | `python/research/` | Figure generation, strictly from measured results |
+| `tests/` | 12 modules; lane isolation and task design are the load-bearing ones |
+| `scripts/reproduce.sh` | Re-derives every number in the README, exits with the failure count |
+
+## How this compares to published systems
+
+See [RELATED_WORK.md](RELATED_WORK.md). In short: the two-lane architecture is
+standard practice rather than a contribution, and the contamination taxonomy is
+covered in more depth by the agent-memory security literature. What did not turn
+up in that search is an *executed* isolation claim — a test that hangs the slow
+lane and measures whether the fast path moves.
 
 ## Known limitations
 

@@ -9,6 +9,23 @@ latency figures without stating how they were measured is not making a claim
 that can be checked. Everything below is reproducible on the commands given, and
 every figure carries the machine state that produced it.
 
+Three of the results in this README are refusals — the tool declining to answer
+because the answer would not have been supportable. They are kept deliberately.
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
+scripts/reproduce.sh          # re-derives every number below, exits with the failure count
+```
+
+| Document | What it covers |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The fast/slow boundary and why each mechanism is shaped the way it is |
+| [docs/RELATED_WORK.md](docs/RELATED_WORK.md) | What here is genuinely unusual, and what is a re-implementation |
+| [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
+| [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Build, runtime, GPU, and backend failures |
+
 ---
 
 ## Why a boundary, and where it sits
@@ -324,6 +341,7 @@ fallback would otherwise look like success.
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
+| `titans_tests` | 12 modules including lane isolation and task design |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -331,7 +349,6 @@ unreadable or malformed file is fatal rather than a silent fall back to
 defaults. The previous `config/engine.yaml` and `config/strategy.yaml` were
 never read by any code — the project has no YAML parser — so they documented
 behaviour that did not exist and have been replaced.
-| `titans_tests` | 9 modules including lane isolation and task design |
 
 ### Running against a live model
 
@@ -404,6 +421,87 @@ magnitude below the advisory lifetime; and stale advisories are rejected rather
 than acted on.
 
 ---
+
+---
+
+## Where this sits relative to published work
+
+Asked directly: **is any of this new?** The full answer, with what was read and
+what was only skimmed, is in [docs/RELATED_WORK.md](docs/RELATED_WORK.md). The
+short one:
+
+**Not new.** Running an LLM off the critical path of a low-latency system is
+standard practice. The contamination taxonomy used here — stale state, entity
+binding, prior-inference injection, retrieval pollution — is described in more
+depth by the 2024–2026 agent-memory security literature
+([AgentPoison](https://arxiv.org/abs/2407.12784),
+[State Contamination in Memory-Augmented LLM Agents](https://arxiv.org/abs/2605.16746),
+[Isolation as a First-Class Principle](https://arxiv.org/abs/2607.12406)).
+LLM-for-trading has at least one system claiming priority.
+
+**Different in kind.** Those papers assume an adversary and answer with a
+detector. This assumes no adversary at all — only a market where a fact that was
+true 800 ms ago is now wrong — and answers with expiry: `valid_until` plus
+`context_generation`, checked on every read. Staleness is not an attack and does
+not need a classifier; it needs a clock and a generation counter, and those cost
+nothing at runtime.
+
+**Unusual.** Three things did not turn up anywhere in the scan behind that
+document:
+
+1. **The isolation claim is executed, not asserted.** Systems papers state that
+   the LLM does not interfere with execution.
+   [`tests/test_lane_isolation.cpp`](tests/test_lane_isolation.cpp) hangs the
+   slow lane at 200 ms per item and shows the fast lane's p99 unchanged, with
+   the resulting 99.9% drop rate reported as a metric.
+2. **The harness refuses.** It will not print a p99 for an operation below its
+   own measured 20 ns floor, and exits non-zero if its calibration fails.
+3. **The negative results shipped** — `NOT RESOLVED`, `INERT`, and the
+   degenerate-classifier gate.
+
+For calibration on the third point: a 2026 survey of LLM trading agents
+([arXiv 2605.19337](https://arxiv.org/abs/2605.19337)) found that of 77 studies,
+19 met minimum evaluation criteria, and of those 19, **two** reported an
+extractable time-consistent split protocol and **one** an explicit
+transaction-cost model. The bar the field is missing is not sophistication. It
+is saying how the number was produced.
+
+The nearest neighbour on the axis this repository actually cares about is
+[Win Fast or Lose Slow](https://arxiv.org/abs/2505.19481) (HFTBench), which
+makes latency a first-class evaluation variable for LLM agents. It measures the
+*model* under a latency budget; this measures the *system* and asks whether the
+slow lane can perturb it. Connecting the two is the most interesting unbuilt
+thing here.
+
+---
+
+## Repository layout
+
+```
+include/titans/core/          lock-free queues, object pools, event bus, JSON, HTTP
+include/titans/trading/       L2/L3 order book, matching, risk, shadow engine
+include/titans/market_data/   feed handling, binary logging, replay
+include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, budgets
+include/titans/bench/         measurement: TSC timing, noise floor, machine fingerprint
+include/titans/context/       research framework: versioned context, contamination, LLM backends
+include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
+src/, examples/, tests/       binaries, experiment drivers, 12 test modules
+python/data/                  Binance archive fetch with checksum verification
+python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
+python/research/              figure generation, strictly from measured results
+scripts/reproduce.sh          re-derives every number in this file
+results/                      measured artifacts, including the two live-model runs
+```
+
+`main` is the development branch and what CI builds. Every push runs the test
+suite in Release and Debug, under ThreadSanitizer, and under AddressSanitizer +
+UBSan; checks that every public header compiles standalone and that no
+translation-unit pair produces an ODR violation; and asserts three refusals —
+`titans_llm_experiment` exiting without a backend, figure generation exiting
+rather than fabricating data, and the benchmark results file carrying its
+`caveats` block. A regression that restored a silent fallback would otherwise
+look like a passing build.
+
 
 ## Requirements
 

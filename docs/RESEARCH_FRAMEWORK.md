@@ -1,5 +1,11 @@
 # Titans Context Contamination Research Framework
 
+> **Positioning first.** Before reading this as a research contribution, read
+> [RELATED_WORK.md](RELATED_WORK.md). The contamination taxonomy below is not
+> novel — it is covered, in more depth, by the 2024-2026 agent-memory security
+> literature. What differs here is the threat model (staleness, not an attacker)
+> and the mechanism (expiry, not detection).
+
 ## Overview
 
 This framework supports systematic research on **LLM Context Contamination Detection and Mitigation** in event-driven streaming systems. It enables reproducible experiments comparing our versioned context approach against baseline methods.
