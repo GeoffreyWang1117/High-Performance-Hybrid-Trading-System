@@ -24,6 +24,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is next, in priority order, and what industry practice each item comes from |
 | [docs/FRESHNESS.md](docs/FRESHNESS.md) | Advisory age as a contract: why expiry was the wrong knob |
 | [docs/LATENCY.md](docs/LATENCY.md) | Tick to trade, per stage, and where the coordinated-omission correction fails |
+| [docs/REGRESSION.md](docs/REGRESSION.md) | Catching a slowdown across commits, and the bimodal hardware underneath |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -91,6 +92,12 @@ the same suite during a concurrent GPU inference job returns 1.72 ns for
 spread and the `caveats` block rather than a single figure. What should
 reproduce anywhere is the ordering and the order of magnitude, not the third
 significant digit.
+
+**The second digit does not reproduce either, and that is now measured.** A
+40-run series on this host shows six of these nine metrics are *bimodal across
+processes*: `try_push` takes one of two values, 1.02 ns or 1.48 ns, decided at
+process start and stable for that whole run. Every row above is one draw from
+such a distribution. See [docs/REGRESSION.md](docs/REGRESSION.md).
 
 | Operation | Cost | Throughput |
 |---|---|---|
@@ -186,6 +193,42 @@ VERDICT
 ```
 
 The run exits non-zero if that check fails.
+
+### Is it slower than last week?
+
+Nothing in this repository used to answer that. CI checked the harness
+calibrates and never compared two runs, so a 20% regression in `update_level`
+would have passed silently. `titans_regression` runs E-Divisive change-point
+detection (Matteson & James 2014, as deployed at MongoDB) over a series of runs
+and fails only when the most recent level shift clears two bars: significant
+under a permutation test, **and** larger than 3× the dispersion the series
+itself shows.
+
+The second bar is the one that matters. Injecting a step of known size into the
+real 40-run baseline:
+
+| injected | p | effect | gate |
+|---|---|---|---|
+| 2% | 0.0050 | 1.3 sd | clean |
+| 5% | 0.0010 | 2.8 sd | clean |
+| **6%** | **0.0010** | **3.2 sd** | **REGRESSION** |
+| 20% | 0.0010 | 9.8 sd | REGRESSION |
+
+A 2% injection is already *significant*. A gate built on significance alone
+fires there, three times more sensitive than the noise justifies, and gets
+switched off by its owners inside a week.
+
+Two things came out of building it that the plan did not anticipate. The
+harness's own `rep_spread_pct` is the wrong noise model — two committed runs of
+the same binary seven days apart differ by 45% on `operator new/delete` while
+each claims internal consistency of 1.4% — and the hardware is bimodal, which
+breaks the effect-size bar on six of nine metrics. Both are reported by the tool
+rather than assumed away.
+
+```
+./build/titans_regression results/benchmark_history/local \
+    --reference results/benchmark_GW-X570-Taichi_20260906.json
+```
 
 ### What was not controlled
 
@@ -388,11 +431,12 @@ fallback would otherwise look like success.
 | `titans_lanes` | Replay real trades through both lanes, end to end |
 | `titans_walkforward` | Out-of-sample policy evaluation across many days |
 | `titans_ticktotrade` | Per-stage and end-to-end latency over the real path |
+| `titans_regression` | Change-point gate over a series of benchmark runs |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 16 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, and the latency instrument |
+| `titans_tests` | 17 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, and the regression gate |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -685,16 +729,16 @@ include/titans/core/          lock-free queues, object pools, event bus, JSON, H
 include/titans/trading/       L2/L3 order book, matching, risk, shadow engine
 include/titans/market_data/   feed handling, binary logging, replay
 include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, budgets
-include/titans/bench/         measurement: TSC timing, noise floor, machine fingerprint
-include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests
+include/titans/bench/         measurement: TSC timing, noise floor, histograms, stage traces
+include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests, change points
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 16 test modules
+src/, examples/, tests/       binaries, experiment drivers, 17 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results
 scripts/reproduce.sh          re-derives every number in this file
-results/                      measured artifacts, including the two live-model runs
+results/                      measured artifacts, including the benchmark series and live-model runs
 ```
 
 `main` is the development branch and what CI builds. Every push runs the test
@@ -705,6 +749,13 @@ translation-unit pair produces an ODR violation; and asserts three refusals —
 rather than fabricating data, and the benchmark results file carrying its
 `caveats` block. A regression that restored a silent fallback would otherwise
 look like a passing build.
+
+CI also runs the benchmark regression gate in all three of its directions —
+quiet on a no-op series, firing on a planted 25% regression, refusing a series
+too short to judge. It does **not** claim to compare a commit against its
+parent: a shared runner's variance is several times the gate's sensitivity
+floor, and pretending otherwise is how a performance gate becomes something
+people rerun until it goes green.
 
 
 ## Requirements

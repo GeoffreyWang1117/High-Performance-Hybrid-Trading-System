@@ -158,6 +158,12 @@ add_executable(titans_ticktotrade
 )
 target_link_libraries(titans_ticktotrade PRIVATE titans_core titans_trading Threads::Threads)
 
+# Benchmark regression gate: change points over a series of benchmark runs
+add_executable(titans_regression
+    src/tools/regression_main.cpp
+)
+target_link_libraries(titans_regression PRIVATE titans_core)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark

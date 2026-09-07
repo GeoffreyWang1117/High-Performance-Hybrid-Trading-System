@@ -24,6 +24,7 @@ if(GTest_FOUND)
         test_walk_forward.cpp
         test_freshness.cpp
         test_pipeline_latency.cpp
+        test_change_point.cpp
     )
 
     target_link_libraries(titans_tests
@@ -57,6 +58,7 @@ else()
         test_walk_forward.cpp
         test_freshness.cpp
         test_pipeline_latency.cpp
+        test_change_point.cpp
     )
 
     target_link_libraries(titans_tests

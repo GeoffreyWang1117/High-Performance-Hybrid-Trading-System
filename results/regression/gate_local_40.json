@@ -1,0 +1,18 @@
+{
+  "schema": "titans.regression.v1",
+  "runs": 40,
+  "alpha": 0.05,
+  "effect_sigmas": 3,
+  "regressions": 0,
+  "metrics": [
+    { "name": "EventBus::publish (auto-timestamp)", "n": 40, "median_ns": 58.9014, "within_run_pct": 1.0194, "series_pct": 1.11067, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" },
+    { "name": "EventBus::publish (timestamp preset)", "n": 40, "median_ns": 38.4211, "within_run_pct": 1.94163, "series_pct": 1.82021, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" },
+    { "name": "L2OrderBook::best_bid", "n": 40, "median_ns": 5.24582, "within_run_pct": 1.46668, "series_pct": 1.13177, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "clean" },
+    { "name": "L2OrderBook::update_level (steady state)", "n": 40, "median_ns": 24.1712, "within_run_pct": 4.14628, "series_pct": 1.69291, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "clean" },
+    { "name": "ObjectPool::allocate", "n": 40, "median_ns": 1.39878, "within_run_pct": 0.912485, "series_pct": 1.4574, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "clean" },
+    { "name": "ObjectPool::deallocate", "n": 40, "median_ns": 1.06877, "within_run_pct": 1.40281, "series_pct": 2.4276, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" },
+    { "name": "SPSCQueue::try_pop", "n": 40, "median_ns": 0.778456, "within_run_pct": 1.16412, "series_pct": 4.75163, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" },
+    { "name": "SPSCQueue::try_push", "n": 40, "median_ns": 1.45803, "within_run_pct": 1.09705, "series_pct": 4.95766, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" },
+    { "name": "operator new/delete (baseline)", "n": 40, "median_ns": 11.34, "within_run_pct": 2.19172, "series_pct": 1.99575, "change_points": 0, "shift_pct": 0, "p_value": 1, "effect_sigmas": 0, "verdict": "bimodal" }
+  ]
+}

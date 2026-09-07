@@ -207,6 +207,38 @@ stage "Real market data (README leakage audit)"
 fi
 
 # ---------------------------------------------------------------------------
+stage "Benchmark regression gate (README: change points over a series)"
+# ---------------------------------------------------------------------------
+# Three outcomes, all asserted. A gate that never fires and a gate that always
+# fires are both green builds, and a gate that silently passes a series too
+# short to judge is a third way to look fine while checking nothing.
+  SERIES_DIR="$RESULTS_DIR/benchmark_history/reproduce"
+  rm -rf "$SERIES_DIR"
+  BUILD_DIR="$BUILD_DIR" scripts/bench_series.sh "$SERIES_DIR" 20 > /tmp/titans_series.out 2>&1
+  check "built a 20-run benchmark series on this host" test $? -eq 0
+
+  "$BUILD_DIR"/titans_regression "$SERIES_DIR" > /tmp/titans_gate_clean.out 2>&1
+  check "gate is quiet on a no-op series" test $? -eq 0
+  sed -n '/NOISE BY TIMESCALE/,/^$/p' /tmp/titans_gate_clean.out | sed 's/^/  /'
+
+  # The roadmap's own example: "a 20% regression in update_level would pass CI
+  # silently". Plant one and require the gate to say so.
+  GATE_METRIC="L2OrderBook::update_level (steady state)"
+  python3 scripts/inject_regression.py "$SERIES_DIR" /tmp/titans_series_bad \
+      --metric "$GATE_METRIC" --pct 25 --last 8 > /dev/null 2>&1
+  "$BUILD_DIR"/titans_regression /tmp/titans_series_bad --metric "$GATE_METRIC" \
+      > /tmp/titans_gate_fire.out 2>&1
+  check "gate fires on a planted 25% regression (exit 6)" test $? -eq 6
+  grep -E 'REGRESSION' /tmp/titans_gate_fire.out | sed 's/^/  /'
+
+  # Too few points to judge must be REFUSED, not passed. The two are
+  # indistinguishable from an exit code of 0.
+  mkdir -p /tmp/titans_series_short && rm -f /tmp/titans_series_short/*.json
+  ls "$SERIES_DIR"/*.json | head -6 | xargs -I{} cp {} /tmp/titans_series_short/
+  "$BUILD_DIR"/titans_regression /tmp/titans_series_short > /dev/null 2>&1
+  check "a series too short to judge is refused (exit 2)" test $? -eq 2
+
+# ---------------------------------------------------------------------------
 if [ "$WITH_WF" -eq 1 ]; then
 stage "Walk-forward (README: out-of-sample policy evaluation)"
 # ---------------------------------------------------------------------------

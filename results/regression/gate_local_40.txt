@@ -1,0 +1,56 @@
+BENCHMARK REGRESSION GATE
+  40 runs from GW-X570-Taichi
+  E-Divisive change points, 999 permutations, alpha 0.050,
+  shift must exceed 3.0x the series' own dispersion
+
+metric                                       median  within%  series%   ratio   shift        p   effect verdict    
+  ----------------------------------------------------------------------------------------------------------------
+EventBus::publish (auto-timestamp)           58.901    1.02%    1.11%     1.1       -        -        - bimodal    
+EventBus::publish (timestamp preset)         38.421    1.94%    1.82%     0.9       -        -        - bimodal    
+L2OrderBook::best_bid                         5.246    1.47%    1.13%     0.8       -        -        - clean      
+L2OrderBook::update_level (steady state)     24.171    4.15%    1.69%     0.4       -        -        - clean      
+ObjectPool::allocate                          1.399    0.91%    1.46%     1.6       -        -        - clean      
+ObjectPool::deallocate                        1.069    1.40%    2.43%     1.7       -        -        - bimodal    
+SPSCQueue::try_pop                            0.778    1.16%    4.75%     4.1       -        -        - bimodal    
+SPSCQueue::try_push                           1.458    1.10%    4.96%     4.5       -        -        - bimodal    
+operator new/delete (baseline)               11.340    2.19%    2.00%     0.9       -        -        - bimodal    
+
+TWO-MODE METRICS (detected, reported, not gated)
+  metric                                          fast      slow       gap separation
+  --------------------------------------------------------------------------------------
+  EventBus::publish (auto-timestamp)            58.625    63.570      8.4%    9.1 sd  (20% in the slow mode)
+  EventBus::publish (timestamp preset)          38.093    42.107     10.5%    8.5 sd  (25% in the slow mode)
+  ObjectPool::deallocate                         1.059     1.267     19.7%   12.5 sd  (28% in the slow mode)
+  SPSCQueue::try_pop                             0.768     0.939     22.3%   19.6 sd  (38% in the slow mode)
+  SPSCQueue::try_push                            1.017     1.483     45.8%   19.9 sd  (48% in the slow mode)
+  operator new/delete (baseline)                11.451    13.433     17.3%   12.9 sd  (22% in the slow mode)
+
+  These take one of two values, fixed for a process and varying
+  between them -- alignment, page colouring, and which physical core
+  the pin lands on are all decided once at start-up. The level test
+  survives it and finds nothing, which is correct. The effect-size
+  bar does not: a dispersion computed across both modes describes
+  neither, so a run of luck in the mode mix would read as a large
+  shift. They are reported and excluded from the verdict rather than
+  gated on a number that does not mean what it says.
+
+NOISE BY TIMESCALE
+  within-run   spread across repetitions inside one process, as the
+               harness reports it. Median across metrics: 1.40%
+  between-run  dispersion of THIS series with its level shifts removed.
+               Median across metrics: 1.82%  (ratio 1.1x)
+  between-session  2 reference run(s) from another session, same
+               binary: 10 of 18 metrics land OUTSIDE this series'
+               full range. Worst deviation from the series median:
+               48.1% on ObjectPool::deallocate.
+
+  A gate calibrated on the within-run number would fire on those.
+  A gate calibrated on this series would fire on some of them. The
+  dispersion a benchmark shows depends on the span it is measured
+  over, and the gate has to be calibrated at the span it runs at --
+  which for CI is across commits and days, the widest one here.
+
+Wrote results/regression/gate_local_40.json
+
+VERDICT
+  Clean. No metric shows a level shift that clears both bars.

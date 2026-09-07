@@ -176,6 +176,57 @@ jobs:
           name: benchmark-results
           path: /tmp/bench.json
 
+  regression-gate:
+    # What this job can and cannot assert, stated up front.
+    #
+    # It CANNOT tell you this commit is slower than the last one. That needs a
+    # series of runs that differ only by commit, and a shared runner does not
+    # provide one -- the same binary on GitHub hardware varies by more than the
+    # regression worth catching. Pretending otherwise is how a performance gate
+    # becomes a thing people rerun until it goes green.
+    #
+    # It CAN assert that the gate still works, in all three directions, and it
+    # can measure the runner's own noise while doing it. A series is built
+    # inside one job, so the comparison is within-session; the gate then has to
+    # stay quiet on it, fire on a planted regression, and refuse a series too
+    # short to judge.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DTITANS_ENABLE_CUDA=OFF -DTITANS_ENABLE_TESTS=OFF
+          cmake --build build --parallel --target titans_benchmark --target titans_regression
+      - name: Build a series on this runner
+        run: BUILD_DIR=build scripts/bench_series.sh /tmp/series 20
+      - name: Gate is quiet on a no-op series, and reports the runner's noise
+        run: ./build/titans_regression /tmp/series
+      - name: Gate fires on a planted 25% regression
+        run: |
+          python3 scripts/inject_regression.py /tmp/series /tmp/series_bad \
+            --metric 'L2OrderBook::update_level (steady state)' --pct 25 --last 8
+          set +e
+          ./build/titans_regression /tmp/series_bad \
+            --metric 'L2OrderBook::update_level (steady state)'
+          code=$?
+          set -e
+          test $code -eq 6 || { echo "::error::gate did not fire (exit $code)"; exit 1; }
+      - name: A series too short to judge is refused, not passed
+        run: |
+          mkdir -p /tmp/series_short
+          ls /tmp/series/*.json | head -6 | xargs -I{} cp {} /tmp/series_short/
+          set +e
+          ./build/titans_regression /tmp/series_short > /dev/null
+          code=$?
+          set -e
+          test $code -eq 2 || { echo "::error::short series was not refused (exit $code)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-series
+          path: /tmp/series
+
   header-hygiene:
     runs-on: ubuntu-latest
     steps:

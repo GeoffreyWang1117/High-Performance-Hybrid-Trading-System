@@ -1,0 +1,136 @@
+{
+  "schema": "titans.benchmark.v2",
+  "machine": {
+    "cpu_model": "AMD Ryzen 9 5950X 16-Core Processor",
+    "physical_cores": 16,
+    "logical_cpus": 32,
+    "smt_active": true,
+    "governor": "performance",
+    "boost_enabled": "1",
+    "clocksource": "tsc",
+    "invariant_tsc": true,
+    "isolcpus_set": false,
+    "kernel": "7.0.0-29-generic",
+    "compiler": "gcc 15.2.0",
+    "build_flags": "-O3 -DNDEBUG -march=native -flto",
+    "hostname": "GW-X570-Taichi",
+    "pinned_cpu": 4,
+    "tsc_ghz": 3.39993,
+    "noise_floor_ns": 20.0004,
+    "caveats": [
+      "No isolcpus/nohz_full: the kernel schedules other work on the measured core. Tail percentiles (p99.9+) include unrelated interference and should be treated as upper bounds.",
+      "SMT is enabled: the sibling hyperthread shares execution resources with the measured core. Benchmarks pin to one logical CPU but do not idle its sibling.",
+      "Turbo/boost is enabled: sustained-load and burst measurements run at different clocks."
+    ]
+  },
+  "results": [
+    {
+      "name": "SPSCQueue::try_push",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 1.05396,
+      "min_ns": 0.988348,
+      "rep_spread_pct": 6.63888,
+      "repetitions": 15,
+      "ops_per_rep": 65535,
+      "ops_per_sec": 9.48799e+08,
+      "has_distribution": false
+    },
+    {
+      "name": "SPSCQueue::try_pop",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 0.761594,
+      "min_ns": 0.754422,
+      "rep_spread_pct": 0.950647,
+      "repetitions": 15,
+      "ops_per_rep": 65535,
+      "ops_per_sec": 1.31303e+09,
+      "has_distribution": false
+    },
+    {
+      "name": "ObjectPool::allocate",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 1.39503,
+      "min_ns": 1.38503,
+      "rep_spread_pct": 0.722022,
+      "repetitions": 15,
+      "ops_per_rep": 4000,
+      "ops_per_sec": 7.1683e+08,
+      "has_distribution": false
+    },
+    {
+      "name": "ObjectPool::deallocate",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 1.06252,
+      "min_ns": 1.05252,
+      "rep_spread_pct": 0.950119,
+      "repetitions": 15,
+      "ops_per_rep": 4000,
+      "ops_per_sec": 9.41156e+08,
+      "has_distribution": false
+    },
+    {
+      "name": "operator new/delete (baseline)",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 12.1702,
+      "min_ns": 11.1478,
+      "rep_spread_pct": 9.17058,
+      "repetitions": 15,
+      "ops_per_rep": 100000,
+      "ops_per_sec": 8.21682e+07,
+      "has_distribution": false
+    },
+    {
+      "name": "EventBus::publish (timestamp preset)",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 38.2182,
+      "min_ns": 37.5376,
+      "rep_spread_pct": 1.81329,
+      "repetitions": 15,
+      "ops_per_rep": 200000,
+      "ops_per_sec": 2.61655e+07,
+      "has_distribution": false
+    },
+    {
+      "name": "EventBus::publish (auto-timestamp)",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 58.5936,
+      "min_ns": 56.9271,
+      "rep_spread_pct": 2.92731,
+      "repetitions": 15,
+      "ops_per_rep": 200000,
+      "ops_per_sec": 1.70667e+07,
+      "has_distribution": false
+    },
+    {
+      "name": "L2OrderBook::update_level (steady state)",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 23.4581,
+      "min_ns": 23.092,
+      "rep_spread_pct": 1.58543,
+      "repetitions": 15,
+      "ops_per_rep": 100000,
+      "ops_per_sec": 4.26292e+07,
+      "has_distribution": false
+    },
+    {
+      "name": "L2OrderBook::best_bid",
+      "mode": "amortized",
+      "mode_note": "amortized batch timing; per-operation distribution is not measurable at this cost scale",
+      "cost_ns": 5.19066,
+      "min_ns": 5.09828,
+      "rep_spread_pct": 1.81202,
+      "repetitions": 15,
+      "ops_per_rep": 1000000,
+      "ops_per_sec": 1.92654e+08,
+      "has_distribution": false
+    }
+  ]
+}

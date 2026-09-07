@@ -190,6 +190,48 @@ is refused rather than printed.
 
 ## P2 — Continuous benchmarking with change-point detection
 
+**Status: DONE. Full account in [REGRESSION.md](REGRESSION.md).**
+
+`titans_regression` runs E-Divisive change-point detection over a series of
+benchmark runs and fails only when the most recent level shift is both
+significant under permutation and larger than the dispersion the series itself
+shows. Sensitivity floor on this host is 6%; the item's own example, a 20%
+regression in `update_level`, is caught at 9.8 sd. All three outcomes are
+asserted in CI and in `scripts/reproduce.sh`: quiet on a no-op series, fires on
+a planted regression, refuses a series too short to judge.
+
+The item said to gate on "the run's own measured noise". That is the number the
+harness already reports, and it is the wrong one. Repetitions inside a process
+share a cache state, a page mapping and a thermal state, so they agree with each
+other and say nothing about the next process: two committed runs of the same
+binary seven days apart differ by 45% on `operator new/delete` while each claims
+internal consistency of 1.4%. The dispersion has to come from the series, and
+the tool prints both so the gap is a reported quantity.
+
+Building the baseline then found something else. **Six of the nine benchmarked
+metrics are bimodal across processes** -- `try_push` takes one of two values
+46% apart, fixed at process start -- with mode separations of 8.5 to 19.9
+robust standard deviations. The level test survives this and correctly finds
+nothing; the effect-size bar does not, so those metrics are reported and
+excluded from the verdict rather than judged on a statistic that describes
+neither mode.
+
+And one bug worth recording, because it made the gate silently useless. The
+first modality check sorted before clustering, so it could not tell two modes
+from a step -- a regression is also two clusters -- and it marked a planted +20%
+step "bimodal, cannot gate" and passed the build. The fix is to test the cluster
+labels in their original order with Wald-Wolfowitz runs: modes interleave, a
+step does not.
+
+Three things this left open, all in REGRESSION.md: the bimodality is measured
+but not explained, no cross-commit series is accumulated anywhere yet, and
+bimodal metrics could be gated mode-conditionally once the modes can be
+identified from something other than the timing.
+
+The original text follows, unedited.
+
+---
+
 ### What the measurement says
 
 CI runs `titans_benchmark` and checks that it self-calibrates. It does not
