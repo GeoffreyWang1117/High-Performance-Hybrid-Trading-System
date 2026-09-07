@@ -204,8 +204,40 @@ the same exit code unless someone makes them different.
   and the sensitivity table shows exactly what it buys.
 
 
+## A false positive worth keeping
+
+The first end-to-end run of `scripts/reproduce.sh` after this landed fired the
+gate on a series built moments earlier with no code change:
+
+```
+EventBus::publish (timestamp preset)  37.209 ns  series 0.86%  +4.9%  p 0.025  5.6 sd  REGRESSION
+```
+
+The gate was right and the assertion around it was wrong. Twenty back-to-back
+runs taken immediately after eight other reproduce stages are not a stationary
+baseline, and the detector found a real level shift in the timing. But it is
+the host that shifted, not the code.
+
+It also exposes a limit of a purely sigma-based bar. That metric's within-series
+dispersion was 0.86%, so 3 sd is about 2.6% and a 4.9% move clears it — while
+the between-session table above measures deviations up to 48% on this same
+machine. **The gate was claiming a sensitivity the widest timescale cannot
+support.** A bar in standard deviations is scale-free, which is what makes it
+portable and also what lets it become arbitrarily fine on a metric that happens
+to be quiet within one session.
+
+`scripts/reproduce.sh` now makes its pass/fail assertions against the committed
+baseline, which is data rather than a measurement of whatever the host is doing,
+and runs a fresh series purely as a report on the machine.
+
+
 ## What is still open
 
+0. **The effect bar has no floor in absolute terms.** The false positive above
+   is the argument for one: a shift should have to clear both K sigma AND the
+   dispersion of the widest timescale there is evidence about. When reference
+   runs from other sessions are supplied the tool already measures that
+   timescale; it does not yet feed it back into the bar.
 1. **The bimodality is not explained, only measured.** The candidates are
    alignment, page colouring and core placement, and separating them needs
    `perf` counters and a controlled allocator, not another statistic. Until

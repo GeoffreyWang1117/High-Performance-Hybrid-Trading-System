@@ -25,6 +25,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/FRESHNESS.md](docs/FRESHNESS.md) | Advisory age as a contract: why expiry was the wrong knob |
 | [docs/LATENCY.md](docs/LATENCY.md) | Tick to trade, per stage, and where the coordinated-omission correction fails |
 | [docs/REGRESSION.md](docs/REGRESSION.md) | Catching a slowdown across commits, and the bimodal hardware underneath |
+| [docs/SELECTION.md](docs/SELECTION.md) | Fold-boundary adjacency and the search behind a reported number |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -436,7 +437,7 @@ fallback would otherwise look like success.
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 17 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, and the regression gate |
+| `titans_tests` | 18 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, the regression gate, and the multiple-testing correction |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -654,6 +655,49 @@ stays at the session mean and the three days stand as a known defect.
 +0.1528, 95% CI [+0.1253, +0.1797]. That is a post-hoc subset and is reported
 below the headline as a sensitivity bound, never in place of it.
 
+### The fold boundary, and how many things were tried
+
+Two ways this number could have been optimistic. Both are now measured rather
+than argued.
+
+**The fold boundary.** Training ends when day *t−1* ends and testing starts when
+day *t* begins; the label looks 1000 ms ahead and the market does not reset at
+midnight. `--embargo-ms` holds training samples within a given distance of a
+day's end back from the threshold applied to the next day, cutting on time
+rather than on a count of trades because trade density varies by two orders of
+magnitude within a session.
+
+| embargo | out-of-sample informedness |
+|---|---|
+| none *(headline)* | +0.1676 |
+| 1 s | +0.1676 |
+| 1 min | +0.1676 |
+| 1 h | +0.1676 |
+| 6 h | +0.1682 |
+
+Six hours discards a quarter of every training day and moves the answer by
+**+0.0006**, a fiftieth of the interval's half-width. The threshold is a 0.95
+quantile over millions of samples and does not turn on its last few thousand.
+
+**The search behind the number.** Sweeps had been run before and nothing was
+selected on them, which is a discipline rather than a mechanism. The trial count
+is now derived from what the tool actually did: passing five embargo values sets
+trials to five without anyone remembering to. The result file records it, the
+headline is printed as the *first* value with the best one named separately, and
+a single-configuration run says it is uncorrected rather than saying nothing.
+
+What that costs, simulated rather than cited — twenty configurations scored on
+27 folds of pure noise, best kept:
+
+```
+best-of-20 on a pure null: 65.2% called significant uncorrected,
+                            0.8% after deflation
+```
+
+Two runs in three. On the real result, five trials put the bar at +0.0177
+against an observed +0.1676, a deflated z of +10.10, and the effect survives.
+Full account in [docs/SELECTION.md](docs/SELECTION.md).
+
 ### What the numbers rest on
 
 `titans_walkforward` refuses rather than reports when it cannot support a
@@ -730,10 +774,10 @@ include/titans/trading/       L2/L3 order book, matching, risk, shadow engine
 include/titans/market_data/   feed handling, binary logging, replay
 include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, budgets
 include/titans/bench/         measurement: TSC timing, noise floor, histograms, stage traces
-include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests, change points
+include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests, change points, deflation
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 17 test modules
+src/, examples/, tests/       binaries, experiment drivers, 18 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results

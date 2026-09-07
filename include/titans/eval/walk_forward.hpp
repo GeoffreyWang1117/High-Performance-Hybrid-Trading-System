@@ -123,7 +123,53 @@ struct ProtocolViolation {
 struct DayRun {
     PolicyOutcome outcome;
     std::vector<double> abs_net;
+    /// Trade timestamp for each `abs_net` entry, so a caller can apply an
+    /// embargo without having to re-derive which trade a sample came from.
+    /// The mapping is not the identity: samples only begin once the flow
+    /// window is warm, and a caller reconstructing the offset by hand would
+    /// be off by `window - 1` and never know.
+    std::vector<Timestamp> abs_net_ms;
 };
+
+/**
+ * @brief Split a day's flow samples at an embargo boundary.
+ *
+ * Samples within @p embargo_ms of @p day_end_ms are adjacent in time to the
+ * day that will be TESTED next, so they are held back from the threshold that
+ * day is judged with. Everything else joins the training set immediately.
+ *
+ * The cut is on the sample's own timestamp and not on a count of samples,
+ * because trade density varies by two orders of magnitude across a session:
+ * "the last 10000 trades" is a different embargo on a quiet morning and a
+ * volatile afternoon, and a parameter whose meaning moves with the data cannot
+ * be swept.
+ *
+ * An embargo of 0 puts everything in `body`, which is what makes the sweep's
+ * first point exactly the protocol that was published without one.
+ */
+struct EmbargoSplit {
+    std::vector<double> body;   ///< usable for the next day's threshold
+    std::vector<double> tail;   ///< held back one more day
+};
+
+inline EmbargoSplit split_by_embargo(const std::vector<double>& abs_net,
+                                     const std::vector<Timestamp>& abs_net_ms,
+                                     Timestamp day_end_ms,
+                                     Timestamp embargo_ms) {
+    EmbargoSplit out;
+    const std::size_t n = std::min(abs_net.size(), abs_net_ms.size());
+    out.body.reserve(n);
+    if (embargo_ms <= 0) {
+        out.body.assign(abs_net.begin(), abs_net.begin() + static_cast<std::ptrdiff_t>(n));
+        return out;
+    }
+    const Timestamp cut = day_end_ms - embargo_ms;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (abs_net_ms[i] > cut) out.tail.push_back(abs_net[i]);
+        else                     out.body.push_back(abs_net[i]);
+    }
+    return out;
+}
 
 inline DayRun run_policy_over_day(const std::vector<context::AggTrade>& trades,
                                   const std::vector<int8_t>& labels,
@@ -157,7 +203,10 @@ inline DayRun run_policy_over_day(const std::vector<context::AggTrade>& trades,
         if (policy.warm()) {
             pending = policy.decide();
             have_pending = true;
-            if (collect_abs_net) run.abs_net.push_back(std::abs(pending.net));
+            if (collect_abs_net) {
+                run.abs_net.push_back(std::abs(pending.net));
+                run.abs_net_ms.push_back(t.transact_time_ms);
+            }
         }
     }
     return run;

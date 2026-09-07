@@ -25,6 +25,7 @@ if(GTest_FOUND)
         test_freshness.cpp
         test_pipeline_latency.cpp
         test_change_point.cpp
+        test_deflated.cpp
     )
 
     target_link_libraries(titans_tests
@@ -59,6 +60,7 @@ else()
         test_freshness.cpp
         test_pipeline_latency.cpp
         test_change_point.cpp
+        test_deflated.cpp
     )
 
     target_link_libraries(titans_tests

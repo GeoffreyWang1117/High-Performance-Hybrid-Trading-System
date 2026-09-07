@@ -269,6 +269,44 @@ exceeds the run's own measured noise, not a fixed percentage.
 
 ## P3 — Close the statistical gaps the walk-forward left open
 
+**Status: DONE. Full account in [SELECTION.md](SELECTION.md).**
+
+Both holes are closed, and one of them was as immaterial as the item guessed --
+which is now a measurement rather than a guess.
+
+**Embargo.** `--embargo-ms` holds training samples within a given distance of a
+day's end back from the threshold applied to the next day, releasing them once
+that day is done. The cut is on time rather than on a count of trades, because
+trade density varies by two orders of magnitude within a session and a
+count-based embargo would be a different embargo every day. Swept from 0 to six
+hours across the 28 days, out-of-sample informedness moves from +0.1676 to
++0.1682 -- about one fiftieth of the interval's half-width -- even though a
+six-hour embargo discards a quarter of every training day. A 0.95 quantile over
+millions of samples does not turn on its last few thousand.
+
+**Multiple testing.** The trial count is now DERIVED rather than declared:
+passing three embargo values sets trials to 3 without anyone remembering to.
+The result file records it, along with the whole sweep and a deflation block.
+When a sweep runs the tool prints the headline as the first value and names the
+best one separately, with the gap and the bar it would have to clear, so
+reporting the best point as the result requires deleting output that says it is
+the best point. When one configuration runs, the tool says the number is
+uncorrected rather than saying nothing, which reads the same as having checked.
+
+What selection costs is simulated rather than argued: twenty configurations
+scored on 27 folds of pure noise, best kept, called significant at 5% **65.2% of
+the time uncorrected and 0.8% after deflation**. That is a test, so it fails if
+the correction stops working.
+
+One bug worth recording. The deflated statistic reaches z = 10.10 and
+`1 - Phi(10.10)` is exactly zero in double precision, so the first version
+printed `p 0` -- claiming infinite evidence, the same failure the sign-flip test
+already avoids by printing a floor. The tail is now computed with `erfc`.
+
+The original text follows, unedited.
+
+---
+
 ### What the measurement says
 
 The 28-day walk-forward is sound on its own terms and has two known holes.

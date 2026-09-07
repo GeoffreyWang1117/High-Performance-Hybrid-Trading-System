@@ -439,6 +439,125 @@ bool test_day_label_from_path() {
     return true;
 }
 
+/**
+ * @brief An embargo holds back exactly the samples adjacent to the next day.
+ *
+ * The split is on time, not on a count. A day whose last hour is quiet and
+ * whose first hour is frantic would give a completely different embargo under a
+ * count-based rule, and the sweep would be measuring trade density.
+ */
+bool test_embargo_splits_on_time_not_on_count() {
+    // Ten samples an hour apart, the last at t = 10h.
+    std::vector<double> v;
+    std::vector<Timestamp> ms;
+    for (int i = 1; i <= 10; ++i) {
+        v.push_back(static_cast<double>(i));
+        ms.push_back(static_cast<Timestamp>(i) * 3600000);
+    }
+    const Timestamp day_end = 10 * 3600000;
+
+    // No embargo: everything is usable immediately.
+    const auto none = split_by_embargo(v, ms, day_end, 0);
+    if (none.body.size() != v.size() || !none.tail.empty()) {
+        std::fprintf(stderr, "FAIL: a zero embargo withheld %zu samples\n",
+                     none.tail.size());
+        return false;
+    }
+
+    // Two and a half hours puts the cut at 7.5h, so the samples at 8h, 9h and
+    // 10h are inside it. Spelling the boundary out matters: an off-by-one here
+    // silently changes what "embargo" means and the sweep would be measuring
+    // something other than what it says.
+    const auto two_five = split_by_embargo(v, ms, day_end, 9000000);
+    if (two_five.tail.size() != 3 || two_five.body.size() != 7) {
+        std::fprintf(stderr, "FAIL: 2.5h embargo gave %zu held back, %zu usable;"
+                             " expected 3 and 7\n",
+                     two_five.tail.size(), two_five.body.size());
+        return false;
+    }
+    if (two_five.tail[0] != 8.0 || two_five.tail[2] != 10.0) {
+        std::fprintf(stderr, "FAIL: the wrong samples were held back (%g..%g)\n",
+                     two_five.tail.front(), two_five.tail.back());
+        return false;
+    }
+    // The sample exactly ON the boundary stays usable: the embargo excludes
+    // what is strictly newer than the cut, and a half-open rule that drifts
+    // would make two adjacent embargo values disagree by one sample.
+    const auto exact = split_by_embargo(v, ms, day_end, 7200000);   // cut at 8h
+    if (exact.tail.size() != 2 || exact.body.back() != 8.0) {
+        std::fprintf(stderr, "FAIL: the boundary sample was not kept (%zu held)\n",
+                     exact.tail.size());
+        return false;
+    }
+
+    // The two halves must partition: nothing invented, nothing lost.
+    if (two_five.body.size() + two_five.tail.size() != v.size()) {
+        std::fprintf(stderr, "FAIL: split lost or duplicated samples\n");
+        return false;
+    }
+
+    // An embargo longer than the day withholds all of it, rather than
+    // silently clamping to something that still looks like a training set.
+    const auto whole = split_by_embargo(v, ms, day_end, 100 * 3600000);
+    if (!whole.body.empty() || whole.tail.size() != v.size()) {
+        std::fprintf(stderr, "FAIL: an over-long embargo left %zu usable\n",
+                     whole.body.size());
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Flow samples must carry the timestamp of the trade that produced them.
+ *
+ * The mapping from sample index to trade index is not the identity -- samples
+ * begin only once the flow window is warm -- so a caller reconstructing it by
+ * arithmetic would be off by the window length and the embargo would silently
+ * cut in the wrong place.
+ */
+bool test_flow_samples_carry_their_own_timestamps() {
+    std::vector<context::AggTrade> trades;
+    std::vector<int8_t> labels;
+    for (int i = 0; i < 300; ++i) {
+        context::AggTrade t;
+        t.agg_trade_id = static_cast<uint64_t>(i);
+        t.price = 100.0;
+        t.quantity = 1.0;
+        t.transact_time_ms = 1000 + i;
+        t.is_buyer_maker = (i % 3 == 0);
+        trades.push_back(t);
+        labels.push_back(0);
+    }
+    lanes::FlowPolicy::Config cfg;
+    cfg.window = 50;
+    const auto run = run_policy_over_day(trades, labels, cfg, true);
+
+    if (run.abs_net.size() != run.abs_net_ms.size()) {
+        std::fprintf(stderr, "FAIL: %zu samples but %zu timestamps\n",
+                     run.abs_net.size(), run.abs_net_ms.size());
+        return false;
+    }
+    if (run.abs_net.empty()) {
+        std::fprintf(stderr, "FAIL: no samples collected at all\n");
+        return false;
+    }
+    // The first sample cannot predate the window filling.
+    if (run.abs_net_ms.front() < trades[cfg.window - 1].transact_time_ms) {
+        std::fprintf(stderr,
+            "FAIL: first sample stamped %lld, before the window was warm at %lld\n",
+            static_cast<long long>(run.abs_net_ms.front()),
+            static_cast<long long>(trades[cfg.window - 1].transact_time_ms));
+        return false;
+    }
+    for (std::size_t i = 1; i < run.abs_net_ms.size(); ++i) {
+        if (run.abs_net_ms[i] < run.abs_net_ms[i - 1]) {
+            std::fprintf(stderr, "FAIL: sample timestamps went backwards at %zu\n", i);
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool run_walk_forward_tests() {
@@ -453,6 +572,8 @@ bool run_walk_forward_tests() {
         {"sampled permutation p is never zero",          test_sign_flip_p_is_never_zero},
         {"rolling drift tracks a reversing trend",       test_rolling_drift_tracks_a_reversing_trend},
         {"day labels parse out of file paths",           test_day_label_from_path},
+        {"an embargo splits on time, not on count",      test_embargo_splits_on_time_not_on_count},
+        {"flow samples carry their own timestamps",      test_flow_samples_carry_their_own_timestamps},
     };
     bool all = true;
     for (const auto& c : cases) {

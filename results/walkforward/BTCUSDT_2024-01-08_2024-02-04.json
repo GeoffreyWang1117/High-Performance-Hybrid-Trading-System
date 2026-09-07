@@ -2,6 +2,11 @@
   "schema": "titans.walkforward.v1",
   "protocol": "expanding window; threshold fitted on days strictly before the test day; predictor sees only trades that closed before the trade being scored",
   "config": {"window": 50, "quantile": 0.95, "horizon_ms": 1000, "threshold_bps": 5, "drift_window_ms": 0, "contaminate": false, "seed": 42, "max_rows_per_day": 0},
+  "trials": {"total": 1, "embargo_values": 1, "declared_elsewhere": 1, "headline_embargo_ms": 0},
+  "embargo_sweep": [
+    {"embargo_ms": 0, "folds": 27, "valid": true, "informedness_oos": 0.167598, "ci_lo": 0.13847, "ci_hi": 0.196639}
+  ],
+  "deflation": {"applied": false, "trials": 1, "expected_max_null": 0, "deflated_z": 0, "deflated_p": 1, "family_wise_p": 1, "survives": false, "refusal": ""},
   "days": [
     {"date": "2024-01-08", "trades": 1850031, "labelled": 1850007, "toxic": 67947, "toxic_rate": 0.036728, "drift_bps": 0.0211794, "aggressor_auc": 0.556411, "flow_auc": 0.605432},
     {"date": "2024-01-09", "trades": 2103320, "labelled": 2103284, "toxic": 156287, "toxic_rate": 0.0743062, "drift_bps": -0.0509189, "aggressor_auc": 0.506095, "flow_auc": 0.55541},

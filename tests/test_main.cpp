@@ -47,6 +47,7 @@ extern bool run_freshness_tests();
 extern bool run_advisory_kind_tests();
 extern bool run_pipeline_latency_tests();
 extern bool run_change_point_tests();
+extern bool run_deflated_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -79,7 +80,8 @@ int main(int argc, char* argv[]) {
         {"Freshness", run_freshness_tests},
         {"Advisory Kind", run_advisory_kind_tests},
         {"Pipeline Latency", run_pipeline_latency_tests},
-        {"Change Point", run_change_point_tests}
+        {"Change Point", run_change_point_tests},
+        {"Deflated Statistics", run_deflated_tests}
     };
 
     for (const auto& [name, test_func] : modules) {
