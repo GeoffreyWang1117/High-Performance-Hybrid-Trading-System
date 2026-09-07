@@ -26,6 +26,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/LATENCY.md](docs/LATENCY.md) | Tick to trade, per stage, and where the coordinated-omission correction fails |
 | [docs/REGRESSION.md](docs/REGRESSION.md) | Catching a slowdown across commits, and the bimodal hardware underneath |
 | [docs/SELECTION.md](docs/SELECTION.md) | Fold-boundary adjacency and the search behind a reported number |
+| [docs/CONTEXT_COST.md](docs/CONTEXT_COST.md) | What a richer prompt costs in staleness, on real model latencies |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -325,6 +326,41 @@ hardware here could host, the infrastructure to run it is verified correct
 scales with context, every raw response is recorded), and the guard prevents a
 degenerate run from being mistaken for a null result.
 
+### What a richer prompt costs in staleness
+
+The research framework studies context strategies and the lane reports advisory
+age. Those meet in an awkward place: prefill cost scales with context length, so
+a richer prompt directly buys delay. `titans_context_cost` prices the trade.
+
+First, what a delay costs on its own. The flow heuristic needs no context, so
+scoring it at a range of delivery delays isolates the price of arriving late:
+
+| delay | 0 ms | 100 ms | **250 ms** | 1000 ms | 4000 ms |
+|---|---|---|---|---|---|
+| informedness | +0.0759 | +0.0409 | **+0.0195** | +0.0086 | +0.0009 |
+
+**Half the value is gone by 250 ms**, against a 1000 ms horizon.
+
+Then what context costs. llama3.1:8b on an RTX 3090, 400 decision points, the
+same points in every arm, compared by resampling them jointly:
+
+| context | total latency | J at context, vs 8 trades | J delivered, vs 8 trades |
+|---|---|---|---|
+| 8 trades | 413 ms | — | — |
+| 128 | 708 ms | +0.0550 [−0.0732, +0.1791] | **−0.1864 [−0.3419, −0.0302]** |
+| 512 | 1608 ms | −0.0900 [−0.2198, +0.0350] | **−0.2970 [−0.5044, −0.0964]** |
+| 1024 | 2887 ms | +0.0450 [−0.0918, +0.1721] | −0.1802 [−0.4316, +0.0684] |
+
+**More context did not make the model better and did make the answer later.**
+Across 128× more context no at-context difference is resolved in any of four
+runs; delivered, the 512-trade arm is resolved negative in all four.
+
+There is no interior optimum here to find. At the smallest context the model
+spends 30 ms on prefill and 383 ms on everything else, and that floor alone
+already exceeds the 250 ms half-life before context has bought anything. Full
+account, including all four runs and the two guards that were both wrong on the
+first attempt, in [docs/CONTEXT_COST.md](docs/CONTEXT_COST.md).
+
 ### Ablations that changed nothing are labelled
 
 The ablation runner also flags configurations that changed nothing:
@@ -433,11 +469,12 @@ fallback would otherwise look like success.
 | `titans_walkforward` | Out-of-sample policy evaluation across many days |
 | `titans_ticktotrade` | Per-stage and end-to-end latency over the real path |
 | `titans_regression` | Change-point gate over a series of benchmark runs |
+| `titans_context_cost` | Freshness decay, and what context length costs in age |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 18 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, the regression gate, and the multiple-testing correction |
+| `titans_tests` | 19 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, the regression gate, the multiple-testing correction, and delivery-time scoring |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -774,10 +811,10 @@ include/titans/trading/       L2/L3 order book, matching, risk, shadow engine
 include/titans/market_data/   feed handling, binary logging, replay
 include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, budgets
 include/titans/bench/         measurement: TSC timing, noise floor, histograms, stage traces
-include/titans/eval/          walk-forward protocol, bootstrap CIs, permutation tests, change points, deflation
+include/titans/eval/          walk-forward, bootstrap CIs, permutation tests, change points, deflation, delivery
 include/titans/context/       research framework: versioned context, contamination, LLM backends
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 18 test modules
+src/, examples/, tests/       binaries, experiment drivers, 19 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results

@@ -164,6 +164,12 @@ add_executable(titans_regression
 )
 target_link_libraries(titans_regression PRIVATE titans_core)
 
+# Context length priced in freshness: what a richer prompt costs in age
+add_executable(titans_context_cost
+    src/tools/context_cost_main.cpp
+)
+target_link_libraries(titans_context_cost PRIVATE titans_core)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark

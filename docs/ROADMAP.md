@@ -346,6 +346,54 @@ raw one whenever the trial count exceeds one.
 
 ## P4 — Context length as a freshness cost
 
+**Status: DONE. Full account in [CONTEXT_COST.md](CONTEXT_COST.md).**
+
+`titans_context_cost` measures both halves and the answer is one-sided.
+
+**What a delay costs on its own.** The flow heuristic needs no context, so
+scoring it at a range of delivery delays isolates the price of arriving late.
+Over 300,000 real trades, informedness runs +0.0759 at zero delay to +0.0009 at
+four seconds, and **half of it is gone by 250 ms** against a 1000 ms horizon.
+That is P0's finding with a number on it.
+
+**What context costs.** llama3.1:8b on an RTX 3090, 400 decision points, the
+same points in every arm. Prompt size fits 201 tokens of overhead plus 5.00
+tokens per trade; marginal prefill is 0.385 ms per token, about 1.9 ms per trade
+of context. Total latency runs 413 ms at 8 trades to 2887 ms at 1024.
+
+**The result, from a paired test.** Every arm answers the same points, so the
+arms are compared by resampling them jointly rather than by eyeballing two
+independent intervals. At context, no difference is resolved -- every interval
+contains zero across 128x more context, in every one of four runs. Delivered,
+going from 8 to 512 trades costs **-0.2970 [-0.5044, -0.0964]**, and that arm is
+resolved negative in all four runs.
+
+So: more context did not make the model better, it did make the answer later,
+and the delay did all the damage. The curve has no interior optimum on this
+hardware -- the optimum is at the left edge, and even there the model's fixed
+383 ms of non-prefill cost already exceeds the 250 ms half-life before context
+buys anything.
+
+The model is deterministic at temperature 0, so the at-context column reproduces
+exactly between runs sharing a seed; the only thing that varies is the measured
+latency, which moves where the answer lands. All four runs are tabulated in the
+doc rather than the one that reads best, and the larger sample was run because
+the intervals were marginal, not because of what they said.
+
+Two guards, and both were wrong first. The truncation check compared raw token
+counts and called a healthy sweep truncated, because a 201-token system prompt
+is most of the smallest arm; it now fits the overhead and tests against the
+line. The degeneracy check measured the share of `one_sided` answers alone and
+called four of five arms degenerate; degeneracy has to be judged on the model's
+whole answer, because the decision rule also reads the side of the trade being
+judged -- and on the wrong measure a model answering the same thing every time
+would have scored a non-zero informedness built entirely on the aggressor-side
+leak.
+
+The original text follows, unedited.
+
+---
+
 ### What the measurement says
 
 Nothing yet — this is the cheapest genuinely new measurement available here.

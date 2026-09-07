@@ -26,6 +26,7 @@ if(GTest_FOUND)
         test_pipeline_latency.cpp
         test_change_point.cpp
         test_deflated.cpp
+        test_delivered.cpp
     )
 
     target_link_libraries(titans_tests
@@ -61,6 +62,7 @@ else()
         test_pipeline_latency.cpp
         test_change_point.cpp
         test_deflated.cpp
+        test_delivered.cpp
     )
 
     target_link_libraries(titans_tests

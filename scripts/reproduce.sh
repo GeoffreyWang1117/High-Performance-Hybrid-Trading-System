@@ -179,6 +179,36 @@ stage "Real market data (README leakage audit)"
       --repeat 3 --advisory parameter >/dev/null 2>&1
   check "shipping a parameter meets its freshness SLO" test $? -eq 0
 
+  stage "Freshness decay (README: what a delay costs, no model needed)"
+  # ROADMAP P4, Part A. This is the reference line the model arms are read
+  # against, and it needs no backend, so it runs in the default data stage
+  # rather than behind --with-llm.
+  mkdir -p "$RESULTS_DIR/context"
+  "$BUILD_DIR"/titans_context_cost --data "$CSV" --max-rows 300000 --skip-model \
+      --json "$RESULTS_DIR/context/decay_${DATA_DATE}.json" \
+      > /tmp/titans_decay.out 2>&1
+  check "freshness decay curve computed" test $? -eq 0
+  sed -n '/delay informedness/,/^$/p' /tmp/titans_decay.out | sed 's/^/  /'
+
+  # The decay must be monotone enough to be a decay. A curve that does not
+  # fall is either a broken evaluator or a policy with no time structure, and
+  # both would be reported as "delay is free".
+  python3 - "$RESULTS_DIR/context/decay_${DATA_DATE}.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+pts = d["decay"]
+first, last = pts[0], pts[-1]
+assert first["informedness"] > last["informedness"], \
+    f"informedness did not fall with delay: {first} -> {last}"
+# And zero delay must be the best point. If a later delay wins, the delivery
+# index is off by one somewhere and the whole curve is measuring the wrong trade.
+best = max(pts, key=lambda p: p["informedness"])
+assert best["delay_ms"] == 0, f"the best point was at {best['delay_ms']} ms, not 0"
+print(f"  zero-delay {first['informedness']:+.4f} -> "
+      f"{last['delay_ms']} ms {last['informedness']:+.4f}")
+PY
+  check "accuracy falls with delay, and zero delay is the best point" test $? -eq 0
+
   stage "Tick-to-trade latency (README: per-stage and end-to-end)"
   # ROADMAP P1. The budget is deliberately generous: this stage asserts that the
   # instrument still works and still refuses what it cannot resolve, not that
@@ -347,6 +377,26 @@ stage "Live-model contamination experiment"
     echo "    or python python/serving/cpu_shim.py --port ${LLM_PORT}"
     FAILURES=$((FAILURES + 1))
   else
+    # ROADMAP P4, Part B: what a richer prompt costs in age, on this host's
+    # real model latencies. Only runs with a backend, and only says anything
+    # if the model is not degenerate -- which it says itself.
+    if [ -n "$LLM_MODEL" ] && [ "$WITH_DATA" -eq 1 ]; then
+      "$BUILD_DIR"/titans_context_cost --data "$CSV" --max-rows 300000 \
+          --model "$LLM_MODEL" --port "$LLM_PORT" --contexts 8,32,128,512 \
+          --points 200 --json "$RESULTS_DIR/context/context_cost.json" \
+          > /tmp/titans_ctxcost.out 2>&1
+      CTX_EXIT=$?
+      sed -n '/trades    tokens/,/^$/p' /tmp/titans_ctxcost.out | sed 's/^/  /'
+      case $CTX_EXIT in
+        0) echo "  context sweep completed and no arm was degenerate" ;;
+        3) echo "  every arm was degenerate; the tool says so and exits 3" ;;
+        4) echo "  the prompt was truncated before it reached the model (exit 4)"
+           FAILURES=$((FAILURES + 1)) ;;
+        *) echo "  context sweep failed (exit $CTX_EXIT)"
+           FAILURES=$((FAILURES + 1)) ;;
+      esac
+    fi
+
     ARGS=(--backend vllm --port "$LLM_PORT" --events 400 --entities 12
           --contamination 0.4 --seed 42 --out "$RESULTS_DIR/llm")
     [ -n "$LLM_MODEL" ] && ARGS+=(--model "$LLM_MODEL")

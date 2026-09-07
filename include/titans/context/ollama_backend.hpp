@@ -69,6 +69,13 @@ public:
                 {"num_predict", request.max_tokens}
             })}
         });
+        // Only sent when asked for. Ollama silently truncates a prompt longer
+        // than its context window, so a caller sweeping context length has to
+        // set this -- and check prompt_tokens afterwards, because setting it
+        // above what the model supports is also silently ignored.
+        if (config_.num_ctx > 0) {
+            req_body["options"]["num_ctx"] = config_.num_ctx;
+        }
 
         if (request.response_format && *request.response_format == "json") {
             req_body["format"] = "json";
@@ -117,6 +124,11 @@ public:
             double eval_ns = (*resp_json)["eval_duration"].as_number();
             double total_ns = (*resp_json)["total_duration"].as_number();
             response.time_to_first_token_ms = (total_ns - eval_ns) / 1e6;
+        }
+        // Prefill on its own. `time_to_first_token_ms` above also carries a
+        // cold model's weight load, which is not a cost of the prompt.
+        if (resp_json->contains("prompt_eval_duration")) {
+            response.prefill_ms = (*resp_json)["prompt_eval_duration"].as_number() / 1e6;
         }
 
         return response;

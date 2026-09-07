@@ -1,0 +1,29 @@
+{
+  "schema": "titans.context_cost.v1",
+  "model": "llama3.1:8b",
+  "skip_model": false,
+  "num_ctx": 16384,
+  "points": 400,
+  "threshold_bps": 2,
+  "horizon_ms": 1000,
+  "truncated": false,
+  "degenerate_arms": 0,
+  "decay": [
+    {"delay_ms": 0, "informedness": 0.0759164, "action_rate": 0.0431931, "scorable": 0.999937},
+    {"delay_ms": 25, "informedness": 0.0568221, "action_rate": 0.035458, "scorable": 0.999937},
+    {"delay_ms": 50, "informedness": 0.041597, "action_rate": 0.0327208, "scorable": 0.999937},
+    {"delay_ms": 100, "informedness": 0.0409488, "action_rate": 0.0302435, "scorable": 0.999937},
+    {"delay_ms": 250, "informedness": 0.0195374, "action_rate": 0.0256859, "scorable": 0.999933},
+    {"delay_ms": 500, "informedness": 0.014031, "action_rate": 0.0243657, "scorable": 0.99993},
+    {"delay_ms": 1000, "informedness": 0.00860528, "action_rate": 0.0250062, "scorable": 0.999917},
+    {"delay_ms": 2000, "informedness": 0.00877556, "action_rate": 0.0242805, "scorable": 0.99987},
+    {"delay_ms": 4000, "informedness": 0.000942701, "action_rate": 0.0236343, "scorable": 0.99984}
+  ],
+  "arms": [
+    {"context_trades": 8, "prompt_tokens": 241, "prefill_ms": 29.905, "total_ms": 413.169, "total_p90_ms": 469.801, "informedness_at_context": 0.065, "informedness_delivered": 0.236111, "delivered_toxic": 72, "delivered_benign": 328, "parse_failures": 0, "majority_share": 0.5425, "points": 400, "degenerate": false},
+    {"context_trades": 32, "prompt_tokens": 361, "prefill_ms": 83.14, "total_ms": 515.627, "total_p90_ms": 530.063, "informedness_at_context": 0.135, "informedness_delivered": 0.120157, "delivered_toxic": 62, "delivered_benign": 338, "parse_failures": 0, "majority_share": 0.66, "points": 400, "degenerate": false},
+    {"context_trades": 128, "prompt_tokens": 841, "prefill_ms": 250.429, "total_ms": 708.418, "total_p90_ms": 750.328, "informedness_at_context": 0.12, "informedness_delivered": 0.0496639, "delivered_toxic": 61, "delivered_benign": 339, "parse_failures": 0, "majority_share": 0.58, "points": 400, "degenerate": false},
+    {"context_trades": 512, "prompt_tokens": 2761, "prefill_ms": 963.031, "total_ms": 1608.17, "total_p90_ms": 1672.6, "informedness_at_context": -0.025, "informedness_delivered": -0.0609129, "delivered_toxic": 34, "delivered_benign": 366, "parse_failures": 0, "majority_share": 0.6625, "points": 400, "degenerate": false},
+    {"context_trades": 1024, "prompt_tokens": 5321, "prefill_ms": 1988.25, "total_ms": 2887.01, "total_p90_ms": 2952.39, "informedness_at_context": 0.11, "informedness_delivered": 0.0559336, "delivered_toxic": 23, "delivered_benign": 377, "parse_failures": 0, "majority_share": 0.58, "points": 400, "degenerate": false}
+  ]
+}

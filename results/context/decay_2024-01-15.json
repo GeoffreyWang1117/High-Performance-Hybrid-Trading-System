@@ -1,0 +1,24 @@
+{
+  "schema": "titans.context_cost.v1",
+  "model": "",
+  "skip_model": true,
+  "num_ctx": 16384,
+  "points": 0,
+  "threshold_bps": 2,
+  "horizon_ms": 1000,
+  "truncated": false,
+  "degenerate_arms": 0,
+  "decay": [
+    {"delay_ms": 0, "informedness": 0.130237, "action_rate": 0.0430832, "scorable": 0.999857},
+    {"delay_ms": 25, "informedness": 0.099495, "action_rate": 0.0348974, "scorable": 0.999857},
+    {"delay_ms": 50, "informedness": 0.0979393, "action_rate": 0.0320565, "scorable": 0.999857},
+    {"delay_ms": 100, "informedness": 0.0769254, "action_rate": 0.0291689, "scorable": 0.999857},
+    {"delay_ms": 250, "informedness": 0.0773833, "action_rate": 0.0283755, "scorable": 0.999853},
+    {"delay_ms": 500, "informedness": 0.0640809, "action_rate": 0.028629, "scorable": 0.99985},
+    {"delay_ms": 1000, "informedness": 0.0287343, "action_rate": 0.0253314, "scorable": 0.999843},
+    {"delay_ms": 2000, "informedness": 0.00456793, "action_rate": 0.0219441, "scorable": 0.999827},
+    {"delay_ms": 4000, "informedness": 0.0140173, "action_rate": 0.0266934, "scorable": 0.99966}
+  ],
+  "arms": [
+  ]
+}

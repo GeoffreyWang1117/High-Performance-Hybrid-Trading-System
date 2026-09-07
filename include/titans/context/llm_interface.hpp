@@ -62,6 +62,15 @@ struct LLMResponse {
     // Timing
     double latency_ms = 0;
     double time_to_first_token_ms = 0;
+    /**
+     * @brief Prefill time alone, when the backend reports it.
+     *
+     * This is the quantity that scales with context length, and the reason a
+     * richer context costs freshness. Kept separate from
+     * `time_to_first_token_ms`, which on a cold model also carries the weight
+     * load and would attribute it to the prompt.
+     */
+    double prefill_ms = 0;
 
     // For structured output
     bool parse_success = false;
@@ -110,6 +119,22 @@ struct OllamaConfig {
     std::string default_model = "llama3.1:8b";
     int timeout_ms = 120000;
     bool keep_alive = true;
+    /**
+     * @brief Context window, in tokens, sent as Ollama's `num_ctx`.
+     *
+     * Ollama defaults this to a few thousand tokens regardless of what the
+     * model supports, and it TRUNCATES a longer prompt silently -- no error, no
+     * warning, a perfectly normal-looking response. Any experiment that sweeps
+     * context length past that point is then measuring the truncation and not
+     * the context: prefill time plateaus, the answer stops changing, and the
+     * curve says "more context does not help".
+     *
+     * 0 leaves the server's default in place. Anything sweeping context length
+     * must set it, and must also check `prompt_tokens` against what it sent --
+     * see `titans_context_cost`, which refuses an arm whose prompt did not
+     * grow.
+     */
+    int num_ctx = 0;
 };
 
 // The concrete Ollama backend lives in ollama_backend.hpp (OllamaBackendImpl).
