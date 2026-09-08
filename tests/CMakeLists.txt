@@ -27,6 +27,7 @@ if(GTest_FOUND)
         test_change_point.cpp
         test_deflated.cpp
         test_delivered.cpp
+        test_qubo.cpp
     )
 
     target_link_libraries(titans_tests
@@ -63,6 +64,7 @@ else()
         test_change_point.cpp
         test_deflated.cpp
         test_delivered.cpp
+        test_qubo.cpp
     )
 
     target_link_libraries(titans_tests

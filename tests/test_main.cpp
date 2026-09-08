@@ -49,6 +49,7 @@ extern bool run_pipeline_latency_tests();
 extern bool run_change_point_tests();
 extern bool run_deflated_tests();
 extern bool run_delivered_tests();
+extern bool run_qubo_tests();
 
 int main(int argc, char* argv[]) {
     std::cout << R"(
@@ -83,7 +84,8 @@ int main(int argc, char* argv[]) {
         {"Pipeline Latency", run_pipeline_latency_tests},
         {"Change Point", run_change_point_tests},
         {"Deflated Statistics", run_deflated_tests},
-        {"Delivered Scoring", run_delivered_tests}
+        {"Delivered Scoring", run_delivered_tests},
+        {"QUBO Subset Selection", run_qubo_tests}
     };
 
     for (const auto& [name, test_func] : modules) {

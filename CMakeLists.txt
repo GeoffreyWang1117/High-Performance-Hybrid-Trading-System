@@ -170,6 +170,12 @@ add_executable(titans_context_cost
 )
 target_link_libraries(titans_context_cost PRIVATE titans_core)
 
+# Subset selection on the slow lane, scored against external labels
+add_executable(titans_subset
+    src/tools/subset_main.cpp
+)
+target_link_libraries(titans_subset PRIVATE titans_core)
+
 # Benchmark executable
 if(TITANS_ENABLE_BENCHMARKS)
     add_executable(titans_benchmark

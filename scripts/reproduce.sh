@@ -209,6 +209,43 @@ print(f"  zero-delay {first['informedness']:+.4f} -> "
 PY
   check "accuracy falls with delay, and zero delay is the best point" test $? -eq 0
 
+  stage "Subset selection (README: the QUBO, scored on external labels)"
+  # ROADMAP P5. Two assertions, and the second is the point of the item.
+  # /tmp, not results/: the committed artifact is the 28-day run, and a
+  # single-day file beside it is exactly the confusion that made this item's
+  # first conclusion wrong.
+  "$BUILD_DIR"/titans_subset --data "$CSV" --max-rows 300000 --points 20000 \
+      --json /tmp/titans_subset.json > /tmp/titans_subset.out 2>&1
+  check "subset selection ran" test $? -eq 0
+  sed -n '/method  /,/excludes zero/p' /tmp/titans_subset.out | sed 's/^/  /'
+
+  python3 - /tmp/titans_subset.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+sa = sorted((m for m in d["methods"] if m["name"].startswith("qubo")),
+            key=lambda m: m["lambda"])
+# 1. The objective must do what it says: diversity monotone in lambda. This is
+#    a property of the formulation and holds on any single day.
+divs = [m["diversity"] for m in sa]
+assert all(b >= a - 1e-9 for a, b in zip(divs, divs[1:])), \
+    f"diversity is not monotone in lambda: {divs}"
+assert divs[-1] > divs[0] + 0.01, f"lambda did not move diversity: {divs}"
+# 2. Selecting on relevance must keep more of it than recency does. Also a
+#    property of the objective, and true on any day.
+rec = next(m for m in d["methods"] if m["name"].startswith("recent"))
+best_rel = max(d["methods"], key=lambda m: m["relevance"])
+assert best_rel["relevance"] > 2.0 * rec["relevance"], \
+    f"selection did not raise relevance: {best_rel['relevance']} vs {rec['relevance']}"
+# NOT asserted here: whether selection beats recency on the LABELS. That is a
+# 28-day claim (docs/SUBSET.md) and a single day cannot support it in either
+# direction -- an earlier version of this check asserted the single-day answer
+# and was wrong for eight days before another day contradicted it.
+print(f"  diversity {divs[0]:.3f} -> {divs[-1]:.3f}, "
+      f"relevance {rec['relevance']:.3f} -> {best_rel['relevance']:.3f}")
+PY
+  check "lambda moves diversity, and selection raises relevance" test $? -eq 0
+  echo "  (whether that beats recency on labels is a 28-day claim; see docs/SUBSET.md)"
+
   stage "Tick-to-trade latency (README: per-stage and end-to-end)"
   # ROADMAP P1. The budget is deliberately generous: this stage asserts that the
   # instrument still works and still refuses what it cannot resolve, not that

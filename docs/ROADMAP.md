@@ -431,6 +431,46 @@ only place with both the context strategies and a lane that reports age.
 
 ## P5 — QUBO subset selection on the slow lane
 
+**Status: DONE. Full account in [SUBSET.md](SUBSET.md).**
+
+The scepticism was wrong, and the thing that works is not the thing the item is
+about.
+
+`titans_subset` runs the formulation unchanged -- relevance, an RBF redundancy
+term, a cardinality penalty, with greedy, simulated annealing and exhaustive
+search as three points on one frontier -- and scores the selection against
+forward toxic-flow labels the objective never sees, across all 28 days, with a
+day as one observation.
+
+**Selection beats recency.** Every selection method's interval excludes zero.
+The best is greedy at lambda = 0: **+0.0576 [+0.0323, +0.0827], better on 21 of
+28 days**, sign test p = 0.00045, and it survives deflation for having been
+picked out of eleven methods (bar +0.0209, z +2.85). Random selection is flat at
+-0.0009, which is the control that makes the rest readable: keeping a subset is
+not what helps, keeping the LARGE trades is.
+
+**The QUBO is not the part that works.** lambda = 0 switches the redundancy term
+off entirely, leaving a sort by relevance. Raising lambda makes things
+monotonically worse, +0.0576 down to +0.0414 at lambda = 2 -- the redundancy
+term, which is the source formulation's headline, costs 28% of the effect.
+Greedy at lambda = 0 takes 2.0 us; the annealer takes 119 us to reach the same
+answer.
+
+Warm-starting across rolling windows -- the open question a reviewer asked --
+does nothing measurable: the energies differ in the seventh significant figure
+and the SIGN of the difference is not stable between runs.
+
+**And this item nearly shipped the opposite conclusion.** It was first written
+from one day, 2024-01-09, which is one of only two days in eight where recency
+wins; the doc said selection does not work. An assertion in
+`scripts/reproduce.sh` running the same tool on a different day is what caught
+it. This repository has a walk-forward protocol precisely because a single day
+is an anecdote, and P5 did not use it until forced to.
+
+The original text follows, unedited.
+
+---
+
 Deliberately below P0. The design is worked out (see the ICML-workshop
 formulation this was drawn from: monitoring as combinatorial subset selection,
 λ-controlled risk–diversity, greedy/MMR/*k*-DPP as points on one Pareto

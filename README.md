@@ -27,6 +27,7 @@ scripts/reproduce.sh          # re-derives every number below, exits with the fa
 | [docs/REGRESSION.md](docs/REGRESSION.md) | Catching a slowdown across commits, and the bimodal hardware underneath |
 | [docs/SELECTION.md](docs/SELECTION.md) | Fold-boundary adjacency and the search behind a reported number |
 | [docs/CONTEXT_COST.md](docs/CONTEXT_COST.md) | What a richer prompt costs in staleness, on real model latencies |
+| [docs/SUBSET.md](docs/SUBSET.md) | Subset selection beats recency, and the QUBO is not the reason |
 | [docs/RESEARCH_FRAMEWORK.md](docs/RESEARCH_FRAMEWORK.md) | The context-contamination study and its rules |
 | [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Types and headers |
 | [docs/DEBUGGING_GUIDE.md](docs/DEBUGGING_GUIDE.md) | Logging, assertions, profiling, memory tracking |
@@ -361,6 +362,42 @@ already exceeds the 250 ms half-life before context has bought anything. Full
 account, including all four runs and the two guards that were both wrong on the
 first attempt, in [docs/CONTEXT_COST.md](docs/CONTEXT_COST.md).
 
+### A QUBO whose sophisticated half does nothing
+
+The last roadmap item was a combinatorial subset selector taken unchanged from a
+workshop formulation: pick *K* of the last *n* trades to maximise relevance minus
+λ·redundancy, with greedy, simulated annealing and exhaustive search as three
+points on one frontier. It was scheduled last on the expectation that it would
+produce a null.
+
+It was run across all 28 days, a day as one observation, scored against forward
+toxic-flow labels the objective never sees.
+
+| method | mean diff vs recency | 95% CI over days | days better |
+|---|---|---|---|
+| random-16 | −0.0009 | [−0.0230, +0.0213] | 12 / 28 |
+| **greedy λ=0** | **+0.0576** | **[+0.0323, +0.0827]** | **21 / 28** |
+| greedy λ=2 | +0.0414 | [+0.0162, +0.0661] | 20 / 28 |
+| qubo/SA λ=0 | +0.0553 | [+0.0302, +0.0812] | 21 / 28 |
+| qubo/SA λ=2 | +0.0425 | [+0.0167, +0.0674] | 20 / 28 |
+
+**Selection wins.** Every interval excludes zero, the sign test over days gives
+p = 0.00045, and picking the best of eleven methods is deflated for (bar
++0.0209, observed +0.0576, z +2.85, survives). Random selection is flat, which
+is the control: keeping a subset is not what helps, keeping the *large* trades
+is.
+
+**The QUBO is not why.** λ = 0 switches the redundancy term off entirely, leaving
+a sort by absolute size — and that is the best method in the table. Raising λ
+makes it monotonically worse. The redundancy term, which is the source
+formulation's headline, costs 28% of the effect; greedy at λ = 0 takes 2.0 µs
+where the annealer takes 119 µs to reach the same answer.
+
+This document nearly said the opposite. The first version was written from one
+day, which happened to be one of the two in eight where recency wins. A
+`reproduce.sh` assertion running the same tool on another day is what caught it.
+Full account in [docs/SUBSET.md](docs/SUBSET.md).
+
 ### Ablations that changed nothing are labelled
 
 The ablation runner also flags configurations that changed nothing:
@@ -470,11 +507,12 @@ fallback would otherwise look like success.
 | `titans_ticktotrade` | Per-stage and end-to-end latency over the real path |
 | `titans_regression` | Change-point gate over a series of benchmark runs |
 | `titans_context_cost` | Freshness decay, and what context length costs in age |
+| `titans_subset` | QUBO subset selection, scored against external labels |
 | `titans_experiment` | Context-strategy comparison, assumed-degradation stand-in |
 | `titans_llm_experiment` | Same comparison against a live model |
 | `titans_replay` | Replay a binary market-data log |
 | `titans_engine` | Event pipeline demo (synthetic ticks; see limitations) |
-| `titans_tests` | 19 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, the regression gate, the multiple-testing correction, and delivery-time scoring |
+| `titans_tests` | 20 modules including lane isolation, task design, the walk-forward protocol, the freshness contract, the latency instrument, the regression gate, the multiple-testing correction, delivery-time scoring, and the subset objective |
 
 `titans_engine --config config/engine.json` reads risk limits, symbols, and
 strategy parameters from the file; command-line flags override it, and an
@@ -813,8 +851,9 @@ include/titans/lanes/         the fast/slow boundary: advisory slot, bridge, bud
 include/titans/bench/         measurement: TSC timing, noise floor, histograms, stage traces
 include/titans/eval/          walk-forward, bootstrap CIs, permutation tests, change points, deflation, delivery
 include/titans/context/       research framework: versioned context, contamination, LLM backends
+include/titans/opt/           subset selection as a QUBO, with exact/greedy/annealing solvers
 include/titans/cuda/          GPU kernels (not yet covered by the measurement rewrite)
-src/, examples/, tests/       binaries, experiment drivers, 19 test modules
+src/, examples/, tests/       binaries, experiment drivers, 20 test modules
 python/data/                  Binance archive fetch with checksum verification
 python/serving/               CPU inference shim, OpenAI-compatible, for CI and GPU-less hosts
 python/research/              figure generation, strictly from measured results
