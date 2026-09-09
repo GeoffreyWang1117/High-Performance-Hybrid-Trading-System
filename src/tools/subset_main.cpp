@@ -429,12 +429,52 @@ int main(int argc, char** argv) {
                 std::printf("  %s\n", std::string(44, '-').c_str());
                 std::printf("  %10s %14.4f %13.1f us\n", "cold", ce, median_of(cold_us));
                 std::printf("  %10s %14.4f %13.1f us\n", "warm", we, median_of(warm_us));
-                std::printf("\n  Lower energy is better. %s\n",
-                            we < ce - 1e-9 ? "Warm starting found better optima."
-                            : (we > ce + 1e-9 ? "Warm starting found WORSE optima, which is a real\n"
-                                                "  risk: a start inside one basin is a start that may\n"
-                                                "  not leave it."
-                                              : "Warm starting changed nothing."));
+
+                // Every window was solved BOTH ways, so this is a paired
+                // comparison and the interval belongs over windows.
+                //
+                // It is judged against its own scale rather than against an
+                // absolute epsilon, because an absolute one is meaningless
+                // here: these energies sit near -1000, so "warm is lower by
+                // 1e-9" is the thirteenth significant figure of a number. The
+                // first version of this block tested exactly that, announced a
+                // direction on a difference in the seventh significant figure,
+                // and supplied a mechanism to explain it -- "a start inside one
+                // basin is a start that may not leave it". The sign of that
+                // difference flips between runs. Inventing a cause for noise is
+                // the failure this repository exists to prevent, and it shipped
+                // here anyway; see docs/SUBSET.md.
+                std::vector<double> paired;
+                paired.reserve(cold_e.size());
+                std::size_t warm_lower = 0;
+                for (std::size_t i = 0; i < cold_e.size(); ++i) {
+                    paired.push_back(warm_e[i] - cold_e[i]);
+                    if (warm_e[i] < cold_e[i]) ++warm_lower;
+                }
+                const auto warm_ci = bootstrap_mean_ci(paired, 0.95, 10000, opts.seed);
+                const double scale = std::abs(ce) > 0.0 ? std::abs(ce) : 1.0;
+                const double relative = std::abs(warm_ci.point) / scale;
+
+                std::printf("\n  Paired over %zu windows; warm minus cold, lower is better.\n",
+                            paired.size());
+                std::printf("    mean difference        %+.4e\n", warm_ci.point);
+                if (warm_ci.valid) {
+                    std::printf("    95%% CI over windows    [%+.4e, %+.4e]\n",
+                                warm_ci.lo, warm_ci.hi);
+                }
+                std::printf("    against the energy     %.1e of |%.1f|\n", relative, ce);
+                std::printf("    warm lower on          %zu of %zu windows\n",
+                            warm_lower, paired.size());
+
+                if (warm_ci.valid && warm_ci.excludes_zero()) {
+                    std::printf("\n  RESOLVED: warm starting is %s, by %.1e of the energy.\n",
+                                warm_ci.point < 0.0 ? "better" : "worse", relative);
+                } else {
+                    std::printf("\n  NOT RESOLVED. The interval spans zero and the difference is\n"
+                                "  %.1e of the energy. No direction is claimed: there is nothing\n"
+                                "  for a good start to save, because the annealer already reaches\n"
+                                "  the optimum from a random one at this size.\n", relative);
+                }
             }
 
             // ------------------------------------------------------------------

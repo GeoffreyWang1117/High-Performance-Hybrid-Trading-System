@@ -72,7 +72,7 @@ cmake --build "$BUILD_DIR" -j"$(nproc)" >/dev/null || {
 echo "  built $(ls "$BUILD_DIR"/titans_* 2>/dev/null | wc -l) executables"
 
 # ---------------------------------------------------------------------------
-stage "Unit tests (README: 12 modules)"
+stage "Unit tests (README: 20 modules)"
 # ---------------------------------------------------------------------------
 "$BUILD_DIR"/tests/titans_tests > /tmp/titans_tests.out 2>&1
 TEST_EXIT=$?
@@ -92,7 +92,16 @@ grep -E 'drift_adjust=' /tmp/titans_tests.out | sed 's/^/  /'
 stage "Fast-path benchmarks (README latency table)"
 # ---------------------------------------------------------------------------
 mkdir -p "$RESULTS_DIR"
-BENCH_JSON="$RESULTS_DIR/benchmark_$(hostname)_$(date +%Y%m%d).json"
+# /tmp, not results/. This stage used to write
+# "$RESULTS_DIR/benchmark_$(hostname)_$(date +%Y%m%d).json", and that path
+# collides with a committed artifact whenever it is run on a day whose file is
+# already tracked. It did: the run this script was introduced in (f5e59b4)
+# overwrote results/benchmark_GW-X570-Taichi_20260830.json, which is the file
+# the README's latency table was taken from. The table's source is now kept at
+# results/benchmark_GW-X570-Taichi_20260830_readme.json, under a name no run of
+# this script can generate, and this stage writes somewhere it cannot reach.
+# Same reasoning as the tick-to-trade, subset and embargo-sweep stages below.
+BENCH_JSON="${BENCH_JSON:-/tmp/titans_benchmark_$(hostname)_$(date +%Y%m%d).json}"
 "$BUILD_DIR"/titans_benchmark --json "$BENCH_JSON" > /tmp/titans_bench.out 2>&1
 BENCH_EXIT=$?
 if [ $BENCH_EXIT -ne 0 ]; then
@@ -104,6 +113,22 @@ else
   grep -E 'SPSCQueue|ObjectPool|EventBus|L2OrderBook|operator new' \
       /tmp/titans_bench.out | sed 's/^/  /'
   echo "  written: $BENCH_JSON"
+  echo
+fi
+
+# The README's table is a specific run, and it is a file. A latency table is not
+# re-derivable -- that is the whole point of the NOTE below -- so what can be
+# checked is that the prose still agrees with the artifact it cites. That went
+# wrong once: the artifact was overwritten by THIS SCRIPT (see the comment
+# above), and nothing noticed for ten days, because nothing compared the two.
+README_TABLE_OUT=$(python3 scripts/check_readme_table.py README.md \
+    "$RESULTS_DIR/benchmark_GW-X570-Taichi_20260830_readme.json" 2>&1)
+README_TABLE_EXIT=$?
+echo "$README_TABLE_OUT" | sed 's/^/  /'
+check "the README latency table matches the artifact it names" \
+    test $README_TABLE_EXIT -eq 0
+
+if [ $BENCH_EXIT -eq 0 ]; then
   echo
   echo "  NOTE: these will not match the README exactly, and are not supposed"
   echo "  to. Absolute latency depends on what else the host is doing; the"

@@ -8,16 +8,16 @@
   "methods": [
     {"name": "recent-16", "lambda": -1, "relevance": 1.3114, "diversity": 0.165998, "solve_us": 0, "informedness_day1": 0.258685, "mean_informedness": 0.185664, "mean_diff_vs_recency": 0, "days_better": 0},
     {"name": "random-16", "lambda": -1, "relevance": 1.30389, "diversity": 0.505124, "solve_us": 0, "informedness_day1": 0.250395, "mean_informedness": 0.184716, "mean_diff_vs_recency": -0.000947985, "days_better": 12},
-    {"name": "greedy l=0.00", "lambda": 0, "relevance": 3.85845, "diversity": 0.587634, "solve_us": 28.88, "informedness_day1": 0.353127, "mean_informedness": 0.243254, "mean_diff_vs_recency": 0.0575898, "days_better": 21},
-    {"name": "greedy l=0.10", "lambda": 0.1, "relevance": 3.64919, "diversity": 0.701411, "solve_us": 29.081, "informedness_day1": 0.353894, "mean_informedness": 0.240308, "mean_diff_vs_recency": 0.0546439, "days_better": 21},
-    {"name": "greedy l=0.50", "lambda": 0.5, "relevance": 3.34633, "diversity": 0.714835, "solve_us": 29.01, "informedness_day1": 0.340826, "mean_informedness": 0.226444, "mean_diff_vs_recency": 0.0407805, "days_better": 20},
-    {"name": "greedy l=1.00", "lambda": 1, "relevance": 3.27454, "diversity": 0.715716, "solve_us": 28.871, "informedness_day1": 0.348687, "mean_informedness": 0.227138, "mean_diff_vs_recency": 0.0414743, "days_better": 20},
-    {"name": "greedy l=2.00", "lambda": 2, "relevance": 3.23479, "diversity": 0.715909, "solve_us": 28.81, "informedness_day1": 0.34969, "mean_informedness": 0.227025, "mean_diff_vs_recency": 0.0413611, "days_better": 20},
-    {"name": "qubo/sa l=0.00", "lambda": 0, "relevance": 3.82703, "diversity": 0.598152, "solve_us": 121.622, "informedness_day1": 0.352596, "mean_informedness": 0.240921, "mean_diff_vs_recency": 0.0552565, "days_better": 21},
-    {"name": "qubo/sa l=0.10", "lambda": 0.1, "relevance": 3.62112, "diversity": 0.701032, "solve_us": 120.603, "informedness_day1": 0.353245, "mean_informedness": 0.238321, "mean_diff_vs_recency": 0.0526565, "days_better": 21},
-    {"name": "qubo/sa l=0.50", "lambda": 0.5, "relevance": 3.32874, "diversity": 0.71526, "solve_us": 112.593, "informedness_day1": 0.341003, "mean_informedness": 0.227864, "mean_diff_vs_recency": 0.0421998, "days_better": 20},
-    {"name": "qubo/sa l=1.00", "lambda": 1, "relevance": 3.26113, "diversity": 0.716332, "solve_us": 108.732, "informedness_day1": 0.343067, "mean_informedness": 0.225926, "mean_diff_vs_recency": 0.0402623, "days_better": 20},
-    {"name": "qubo/sa l=2.00", "lambda": 2, "relevance": 3.22374, "diversity": 0.716683, "solve_us": 106.922, "informedness_day1": 0.356135, "mean_informedness": 0.228205, "mean_diff_vs_recency": 0.0425409, "days_better": 20}
+    {"name": "greedy l=0.00", "lambda": 0, "relevance": 3.85845, "diversity": 0.587634, "solve_us": 28.37, "informedness_day1": 0.353127, "mean_informedness": 0.243254, "mean_diff_vs_recency": 0.0575898, "days_better": 21},
+    {"name": "greedy l=0.10", "lambda": 0.1, "relevance": 3.64919, "diversity": 0.701411, "solve_us": 28.581, "informedness_day1": 0.353894, "mean_informedness": 0.240308, "mean_diff_vs_recency": 0.0546439, "days_better": 21},
+    {"name": "greedy l=0.50", "lambda": 0.5, "relevance": 3.34633, "diversity": 0.714835, "solve_us": 28.521, "informedness_day1": 0.340826, "mean_informedness": 0.226444, "mean_diff_vs_recency": 0.0407805, "days_better": 20},
+    {"name": "greedy l=1.00", "lambda": 1, "relevance": 3.27454, "diversity": 0.715716, "solve_us": 28.381, "informedness_day1": 0.348687, "mean_informedness": 0.227138, "mean_diff_vs_recency": 0.0414743, "days_better": 20},
+    {"name": "greedy l=2.00", "lambda": 2, "relevance": 3.23479, "diversity": 0.715909, "solve_us": 28.321, "informedness_day1": 0.34969, "mean_informedness": 0.227025, "mean_diff_vs_recency": 0.0413611, "days_better": 20},
+    {"name": "qubo/sa l=0.00", "lambda": 0, "relevance": 3.82703, "diversity": 0.598152, "solve_us": 120.333, "informedness_day1": 0.352596, "mean_informedness": 0.240921, "mean_diff_vs_recency": 0.0552565, "days_better": 21},
+    {"name": "qubo/sa l=0.10", "lambda": 0.1, "relevance": 3.62112, "diversity": 0.701032, "solve_us": 119.123, "informedness_day1": 0.353245, "mean_informedness": 0.238321, "mean_diff_vs_recency": 0.0526565, "days_better": 21},
+    {"name": "qubo/sa l=0.50", "lambda": 0.5, "relevance": 3.32874, "diversity": 0.71526, "solve_us": 111.202, "informedness_day1": 0.341003, "mean_informedness": 0.227864, "mean_diff_vs_recency": 0.0421998, "days_better": 20},
+    {"name": "qubo/sa l=1.00", "lambda": 1, "relevance": 3.26113, "diversity": 0.716332, "solve_us": 107.363, "informedness_day1": 0.343067, "mean_informedness": 0.225926, "mean_diff_vs_recency": 0.0402623, "days_better": 20},
+    {"name": "qubo/sa l=2.00", "lambda": 2, "relevance": 3.22374, "diversity": 0.716683, "solve_us": 105.493, "informedness_day1": 0.356135, "mean_informedness": 0.228205, "mean_diff_vs_recency": 0.0425409, "days_better": 20}
   ],
   "per_day": [
     {"day": "BTCUSDT-aggTrades-2024-01-08.csv", "informedness": [0.258685, 0.250395, 0.353127, 0.353894, 0.340826, 0.348687, 0.34969, 0.352596, 0.353245, 0.341003, 0.343067, 0.356135]},

@@ -150,12 +150,46 @@ The window slides one trade at a time, so the previous solution is a
 near-feasible start. The source formulation leaves this open; a reviewer asked
 about it directly.
 
-**No.** Cold and warm energies differ in the seventh significant figure, solve
-time is unchanged, and **the sign of the difference is not stable between
-runs** — one run had warm ahead, the next had it behind. There is nothing for a
-good start to save, because the annealer already reaches the optimum from a
-random one at this size. The tool now reports the difference against its own
-scale rather than announcing a direction for it.
+**No.** Every one of 2000 rolling windows was solved both ways, so the
+comparison is paired and the interval belongs over windows:
+
+| | |
+|---|---|
+| mean difference, warm − cold | +6.2965e−04 |
+| 95% CI over windows | [−7.7119e−04, +2.0793e−03] |
+| as a fraction of the energy | 6.2e−07 of \|−1023.7\| |
+| warm lower on | 988 of 2000 windows |
+| verdict | **NOT RESOLVED** |
+
+The interval spans zero, the difference is the seventh significant figure, and
+warm wins 49.4% of the windows, which is a coin flip. Solve time is unchanged.
+There is nothing for a good start to save, because the annealer already reaches
+the optimum from a random one at this size.
+
+### The paragraph above used to be a lie about its own tool
+
+From the moment it was written, this section ended with the sentence *"the tool now reports the
+difference against its own scale rather than announcing a direction for it."*
+It did not. `subset_main.cpp` tested the two mean energies against an **absolute**
+epsilon of `1e-9` — on numbers near −1023.7, that is the thirteenth significant
+figure — and on this data it printed:
+
+```
+  Lower energy is better. Warm starting found WORSE optima, which is a real
+  risk: a start inside one basin is a start that may not leave it.
+```
+
+A mechanism, invented to explain a difference of 6.2e−07 whose sign flips
+between runs. This is precisely the failure this repository exists to prevent,
+committed in the document that reports the near-miss on the previous page, and
+it survived because **nothing here checks a document against the tool it
+describes.** It was found by an audit reading the code beside the prose, not by
+any test.
+
+The verdict is now the paired interval above, and no direction is claimed unless
+it excludes zero. Fixed 2026-09-09; the artifact was regenerated, and every
+other number in it — every informedness, interval, sign test and deflation —
+came back identical, which is how it is known that only the verdict changed.
 
 
 ## What the solve costs

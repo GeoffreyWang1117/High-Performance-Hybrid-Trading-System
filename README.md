@@ -114,7 +114,20 @@ such a distribution. See [docs/REGRESSION.md](docs/REGRESSION.md).
 | `EventBus::publish` (pre-stamped) | 38.26 ns (37.20) | 26 M ops/s |
 | `EventBus::publish` (auto-timestamp) | 59.83 ns (57.18) | 17 M ops/s |
 
-Reproduce with `./build/titans_benchmark --json results/mine.json`.
+That table is one run, and it is a file:
+[`results/benchmark_GW-X570-Taichi_20260830_readme.json`](results/benchmark_GW-X570-Taichi_20260830_readme.json).
+Every row above, throughput column included, can be read out of it, along with
+the machine state and the `caveats` block that produced it. Reproduce your own
+with `./build/titans_benchmark --json results/mine.json`.
+
+That file exists under that name because the obvious name was not safe. It was
+originally committed as `results/benchmark_GW-X570-Taichi_20260830.json` and
+was overwritten later the same day by `scripts/reproduce.sh`, which wrote its
+own run to `benchmark_$(hostname)_$(date +%Y%m%d).json` — the same path. From
+that day until this one the table cited a file that no longer contained it, and
+nothing noticed, because nothing in this repository checks its prose against its
+own artifacts. The script now writes to `/tmp`, and the artifact is kept under a
+name no run of it can generate.
 
 **No p99 appears in that table, deliberately.** These operations cost less than
 the 20 ns timing floor measured at startup, so a per-operation distribution is

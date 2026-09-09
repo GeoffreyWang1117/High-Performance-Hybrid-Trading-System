@@ -171,6 +171,23 @@ jobs:
           print(f"ok: {len(d['results'])} results, {len(m['caveats'])} caveats")
           PY
         shell: bash
+      - name: The README's latency table still matches the artifact it names
+        # The nine-row table under "Measured performance" is one specific run,
+        # and that run is a committed file. It cannot be re-derived -- absolute
+        # latency depends on the host -- so the checkable property is that the
+        # prose and the artifact still agree.
+        #
+        # This is not hypothetical. The artifact was originally committed as
+        # results/benchmark_GW-X570-Taichi_20260830.json and was overwritten the
+        # same day by scripts/reproduce.sh, which wrote its own run to
+        # benchmark_$(hostname)_$(date +%Y%m%d).json -- the same path. The script
+        # written to verify every number in the README destroyed the evidence for
+        # one of them, and nothing caught it, because nothing compared prose to
+        # artifacts. This step is that comparison.
+        run: |
+          python3 scripts/check_readme_table.py README.md \
+            results/benchmark_GW-X570-Taichi_20260830_readme.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
